@@ -40,9 +40,12 @@ install -m 0644 "$ROOT/LICENSE" "$DOC/copyright"
 cat > "$STAGE/changelog.tmp" <<EOF
 $PKG ($VERSION) unstable; urgency=medium
 
-  * Bản phát hành đầu tiên: thống kê phần mềm theo phương thức cài (APT, PPA,
-    file .deb, Snap, Flatpak, AppImage, pip, npm, cài thủ công) và gỡ từng
-    phần mềm với xem trước, luật bảo vệ hệ thống và lịch sử gỡ.
+  * Bản phát hành 1.0: thống kê phần mềm theo phương thức cài (APT, PPA /
+    kho bên thứ ba, file .deb, Snap, Flatpak, AppImage, pip, npm, cài thủ
+    công) và gỡ từng phần mềm với xem trước, purge / autoremove, luật bảo vệ
+    hệ thống và lịch sử gỡ.
+  * Gỡ gói APT chạy dưới khoá dpkg của helper suốt từ lúc kiểm tra tới lúc
+    gỡ xong; chặn khi dpkg bị ngắt giữa chừng hoặc gói đang bị apt-mark hold.
   * Đóng góp dự án (Buy me a coffee): nút riêng trên thanh tiêu đề, hộp thoại có mã VietQR.
 
  -- THMK V-Soft <ttvn92i2026@gmail.com>  $(LC_ALL=C date -R)

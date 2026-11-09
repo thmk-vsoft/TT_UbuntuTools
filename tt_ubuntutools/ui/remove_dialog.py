@@ -152,12 +152,10 @@ class RemoveDialog(Adw.Dialog):
 
         if plan.error:
             self.dynamic.append(_notice("blocked-box", "dialog-error-symbolic", plan.error))
+        # Mỗi lý do tự giải thích (luật bảo vệ, gói bị hold, dpkg bị ngắt, purge...) — không thêm câu chung
+        # "ảnh hưởng thành phần quan trọng", vì với hold / dpkg bị ngắt câu đó sai và mâu thuẫn hướng dẫn sửa.
         for r in plan.blocked_reasons:
             self.dynamic.append(_notice("blocked-box", "changes-prevent-symbolic", "Bị chặn: " + r))
-        if plan.blocked_reasons:
-            self.dynamic.append(_notice(
-                "blocked-box", "dialog-information-symbolic",
-                "Không thể gỡ vì thao tác này sẽ ảnh hưởng tới thành phần quan trọng của hệ thống."))
         for w in plan.warnings:
             self.dynamic.append(_notice("warning-box", "dialog-warning-symbolic", w))
 

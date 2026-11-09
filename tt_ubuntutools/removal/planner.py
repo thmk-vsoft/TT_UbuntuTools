@@ -14,7 +14,8 @@ from . import pathrules
 from .pathrules import systemd_units_using  # noqa: F401  (dùng lại ở collector)
 from .helperpath import HelperUnavailable, helper_path
 from .protection import (SEEDED_DESKTOP_SNAPS, active_session_packages, check_apt_removal,
-                         installed_initramfs_providers, purge_reason, boot_hook_warnings, clear_caches)
+                         installed_initramfs_providers, purge_reason, boot_hook_warnings, clear_caches,
+                         DPKG_INTERRUPTED_MSG, HELD_MARK, dpkg_interrupted, held_reason)
 
 HOME = os.path.expanduser("~")
 
@@ -67,6 +68,10 @@ def _plan_apt(plan: RemovalPlan, item: SoftwareItem, opts: RemovalOptions):
         return
     if "essential packages will be removed" in res.stdout.lower():
         plan.blocked_reasons.append("apt cảnh báo: thao tác này sẽ gỡ gói Essential của hệ thống.")
+    if HELD_MARK in res.stdout.lower():
+        plan.blocked_reasons.append(held_reason(item.name))
+    if dpkg_interrupted():
+        plan.blocked_reasons.append(DPKG_INTERRUPTED_MSG)
     info: dict[str, tuple[bool, str]] = {}
     sizes: dict[str, int | None] = {}
     providers: list[str] = []

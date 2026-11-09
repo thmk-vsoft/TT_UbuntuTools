@@ -298,6 +298,28 @@ def remote_session_packages() -> dict[str, str]:
     return found
 
 
+HELD_MARK = "held packages will be changed"
+DPKG_INTERRUPTED_MSG = ("dpkg đã bị ngắt giữa chừng ở lần cài/gỡ trước (mất điện, đóng terminal…). Hãy chạy "
+                        "'sudo dpkg --configure -a' trong terminal để sửa trước, rồi thử lại.")
+
+
+def held_reason(name: str) -> str:
+    return (f"Có gói đang bị giữ (apt-mark hold) trong thao tác này. Công cụ tôn trọng lựa chọn đó nên không gỡ; "
+            f"nếu chắc chắn, hãy chạy 'sudo apt-mark unhold {name}' rồi thử lại.")
+
+
+def dpkg_interrupted(admin_dir: str = "/var/lib/dpkg") -> bool:
+    """Giống debSystem::CheckUpdates của apt: còn file nhật ký số trong <admin>/updates/ nghĩa là dpkg bị ngắt
+    giữa chừng. apt chạy với Debug::NoLocking (trong helper) bỏ qua kiểm tra này, nên ta tự làm lại."""
+    try:
+        names = os.listdir(os.path.join(admin_dir, "updates"))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True  # không đọc được: coi như có vấn đề (fail-closed)
+    return any(n.isdigit() for n in names)
+
+
 def clear_caches() -> None:
     """Gọi khi làm mới danh sách / lập kế hoạch mới để phản ánh trạng thái hiện tại."""
     active_session_packages.cache_clear()

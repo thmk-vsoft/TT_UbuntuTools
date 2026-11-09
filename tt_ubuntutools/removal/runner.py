@@ -63,8 +63,12 @@ class RemovalRunner:
         self._next(0)
 
     # ---- nội bộ ----------------------------------------------------------
+    MAX_LINE = 4096  # một dòng output khổng lồ không được làm đơ giao diện / phình lịch sử
+
     def _emit(self, line: str):
         line = display(line)
+        if len(line) > self.MAX_LINE:
+            line = line[:self.MAX_LINE] + " …"
         self._log.append(line)
         self.on_line(line)
 
@@ -102,6 +106,8 @@ class RemovalRunner:
         self._no_agent = False
         self._jobs_done: list[str] = []
         self._nonce = ""
+        self._cmd_started = False  # helper đã bắt đầu chạy lệnh thay đổi hệ thống ("$ ..." sau marker)
+        self._helper_error = ""  # lý do cụ thể helper đưa ra (dòng "LỖI AN TOÀN:" / "LỖI:")
         try:
             launcher = Gio.SubprocessLauncher.new(
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE
@@ -171,7 +177,9 @@ class RemovalRunner:
             self._log.append(f"(lỗi hiển thị dòng log: {exc})")
 
     def _handle_line(self, raw: bytes):
-        text = raw.decode("utf-8", "replace").replace("\r", "")
+        # Thanh tiến trình dùng \r để vẽ đè: chỉ giữ đoạn cuối cùng có nội dung.
+        parts = [p for p in raw.decode("utf-8", "replace").split("\r") if p.strip()]
+        text = parts[-1] if parts else ""
         stripped = text.strip()
         if not self._saw_marker and stripped.startswith(HELPER_MARKER):
             # Dòng đầu tiên của helper, in TRƯỚC mọi output lệnh con: mang theo mã nonce bí mật.
@@ -185,6 +193,11 @@ class RemovalRunner:
             return
         if "No authentication agent found" in text:
             self._no_agent = True
+        if self._saw_marker:  # chỉ helper (bước root) in marker
+            if stripped.startswith("$ "):
+                self._cmd_started = True
+            elif stripped.startswith(("LỖI AN TOÀN:", "LỖI:")):
+                self._helper_error = stripped.split(":", 1)[1].strip()
         self._emit(text)
 
     def _on_exit(self, p, res, data):
@@ -216,6 +229,16 @@ class RemovalRunner:
             if code == 127:
                 return "Không được cấp quyền quản trị (xác thực thất bại hoặc bị từ chối) — chưa gỡ gì."
             return f"Không khởi chạy được helper (mã {code}) — chưa gỡ gì."
+        reason = getattr(self, "_helper_error", "")
+        if step.root and code == 5 and reason:
+            return f"Kiểm tra an toàn không đạt — chưa gỡ gì: {reason}"
+        if step.root and code == 6 and getattr(self, "_cmd_started", False):
+            msg = "Lệnh gỡ bị lỗi giữa chừng — hệ thống có thể đã thay đổi một phần (xem nhật ký)."
+            if any(a == "apt-remove" for a in step.argv):
+                msg += " Nếu apt/dpkg báo lỗi, hãy chạy 'sudo dpkg --configure -a' trong terminal để hoàn tất."
+            return msg
+        if step.root and code == 6 and reason:
+            return f"Có lỗi trước khi thực hiện — chưa gỡ gì: {reason}"
         if step.root and code in HELPER_MESSAGES:
             return HELPER_MESSAGES[code]
         return f"Lệnh kết thúc với mã lỗi {code}."

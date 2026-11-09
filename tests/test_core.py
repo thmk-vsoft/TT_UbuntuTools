@@ -272,6 +272,23 @@ class HelperTest(unittest.TestCase):
         # g++ / memtest86+ là tên gói hợp lệ; chặn "cài thêm" nằm ở bước mô phỏng (dòng Inst).
         self.assertEqual(self.h.build(["apt-remove", "g++", "--expect", "g++,gcc"])["name"], "g++")
 
+    def test_npm_legacy_uppercase(self):
+        self.h.build(["npm-remove", "JSONStream", "--prefix", "/usr/local"])
+        with self.assertRaises(self.h.UsageError):
+            self.h.build(["npm-remove", "@Foo/bar", "--prefix", "/usr/local"])
+        with self.assertRaises(self.h.UsageError):
+            self.h.build(["npm-remove", "../x", "--prefix", "/usr/local"])
+
+    def test_dpkg_interrupted_rule(self):
+        from tt_ubuntutools.removal.protection import dpkg_interrupted
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(dpkg_interrupted(d))
+            os.makedirs(os.path.join(d, "updates"))
+            open(os.path.join(d, "updates", "tmp.i"), "w").close()
+            self.assertFalse(dpkg_interrupted(d))
+            open(os.path.join(d, "updates", "0003"), "w").close()
+            self.assertTrue(dpkg_interrupted(d))
+
     def test_split_actions(self):
         self.assertEqual(self.h.split_actions(["rm-path", "/opt/a", "::", "rm-path", "/opt/b"]),
                          [["rm-path", "/opt/a"], ["rm-path", "/opt/b"]])
@@ -317,6 +334,111 @@ class HelperTest(unittest.TestCase):
             self.h.check_apt(job)
 
 
+_FAKE_STATUS = """Package: ttdummy
+Status: install ok installed
+Priority: optional
+Section: misc
+Installed-Size: 1
+Maintainer: x <x@example.invalid>
+Architecture: all
+Version: 1.0
+Description: dummy
+ dummy
+
+"""
+
+
+@unittest.skipUnless(os.path.exists("/usr/bin/apt-get"), "cần apt-get")
+class HelperAptRunTest(unittest.TestCase):
+    """Chạy apt-get THẬT theo đúng đường thực hiện của helper (giữ khoá frontend rồi gỡ) trên một hệ
+    dpkg giả trong thư mục tạm, với dpkg giả — không cần root, không đụng tới hệ thống.
+    Bắt lỗi tự khoá chết: helper giữ khoá frontend còn apt-get lại đứng chờ chính khoá đó."""
+
+    def setUp(self):
+        self.h = load_helper()
+        self.tmp = tempfile.TemporaryDirectory()
+        d = self.tmp.name
+        for sub in ("state/lists/partial", "cache/archives/partial", "etc/apt.conf.d", "etc/preferences.d",
+                    "etc/sources.list.d", "log"):
+            os.makedirs(os.path.join(d, sub))
+        open(os.path.join(d, "etc/sources.list"), "w").close()
+        with open(os.path.join(d, "state/status"), "w") as f:
+            f.write(_FAKE_STATUS)
+        self.calls = os.path.join(d, "log/dpkg.calls")
+        fake = os.path.join(d, "fakedpkg")
+        with open(fake, "w") as f:
+            f.write('#!/bin/sh\necho "$* LOCKED=${DPKG_FRONTEND_LOCKED:-unset}" >> "%s"\nexit 0\n' % self.calls)
+        os.chmod(fake, 0o755)
+        conf = os.path.join(d, "apt.conf")
+        with open(conf, "w") as f:
+            for k, v in (("Dir::State", "state"), ("Dir::State::status", "state/status"), ("Dir::Cache", "cache"),
+                         ("Dir::Etc", "etc"), ("Dir::Etc::sourcelist", "etc/sources.list"),
+                         ("Dir::Etc::sourceparts", "etc/sources.list.d"), ("Dir::Etc::parts", "etc/apt.conf.d"),
+                         ("Dir::Etc::preferencesparts", "etc/preferences.d"), ("Dir::Log", "log"),
+                         ("Dir::Bin::dpkg", "fakedpkg")):
+                f.write(f'{k} "{os.path.join(d, v)}";\n')
+        self.h.ENV = dict(self.h.ENV, APT_CONFIG=conf)
+        self.h.DPKG_FRONTEND_LOCK = os.path.join(d, "state/lock-frontend")
+        self.state = os.path.join(d, "state")
+        dq = os.path.join(d, "fake-dpkg-query")
+        with open(dq, "w") as f:
+            f.write('#!/bin/sh\nexec /usr/bin/dpkg-query --admindir="%s" "$@"\n' % self.state)
+        os.chmod(dq, 0o755)
+        self.h.DPKG_QUERY = dq
+        self.h.OUT.write = lambda data: None  # không in output của apt ra màn hình test
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_apt_runs_while_helper_holds_frontend_lock(self):
+        import time as _t
+        job = self.h.build(["apt-remove", "ttdummy", "--expect", "ttdummy"])
+        lock = self.h.FrontendLock()
+        lock.acquire(timeout=5)
+        try:
+            removed, installed = self.h.parse_simulation(
+                self.h.capture(self.h.apt_sim_cmd(job, simulate=True), 60).stdout)
+            self.assertEqual((removed, installed), ({"ttdummy"}, set()))
+            t0 = _t.monotonic()
+            ok, info = self.h.run_job(job)
+            elapsed = _t.monotonic() - t0
+        finally:
+            lock.release()
+        self.assertTrue(ok, info)
+        self.assertLess(elapsed, 30, "apt-get đứng chờ khoá do chính helper giữ")
+        with open(self.calls) as f:
+            calls = f.read()
+        self.assertIn("--remove ttdummy", calls)
+        self.assertNotIn("LOCKED=unset", calls)  # dpkg luôn được báo là khoá frontend đã có người giữ
+
+    def _job(self):
+        return self.h.build(["apt-remove", "ttdummy", "--expect", "ttdummy"])
+
+    def test_check_apt_passes_on_clean_sandbox(self):
+        self.h.check_apt(self._job())
+
+    def test_check_apt_refuses_interrupted_dpkg(self):
+        os.makedirs(os.path.join(self.state, "updates"))
+        open(os.path.join(self.state, "updates", "0001"), "w").close()
+        with self.assertRaisesRegex(self.h.SafetyError, "dpkg --configure -a"):
+            self.h.check_apt(self._job())
+        # chính apt-get chạy NoLocking sẽ KHÔNG tự chặn — đó là lý do helper phải tự kiểm tra
+        out = self.h.capture(self.h.apt_sim_cmd(self._job(), simulate=True), 60)
+        self.assertEqual(out.returncode, 0)
+
+    def test_check_apt_refuses_held_package(self):
+        with open(os.path.join(self.state, "status"), "w") as f:
+            f.write(_FAKE_STATUS.replace("install ok installed", "hold ok installed"))
+        with self.assertRaisesRegex(self.h.SafetyError, "apt-mark"):
+            self.h.check_apt(self._job())
+
+    def test_apt_refused_without_lock(self):
+        job = self.h.build(["apt-remove", "ttdummy", "--expect", "ttdummy"])
+        ok, _ = self.h.run_job(job)
+        self.assertFalse(ok)
+        self.assertFalse(os.path.exists(self.calls))
+
+
 class PathRulesTest(unittest.TestCase):
     def test_rejects(self):
         never = lambda p: None  # noqa: E731
@@ -331,8 +453,16 @@ class PathRulesTest(unittest.TestCase):
 
     @unittest.skipUnless(os.path.isdir("/opt") and os.listdir("/opt"), "cần /opt có nội dung")
     def test_real_opt_entry(self):
-        target = "/opt/" + sorted(os.listdir("/opt"))[0]
         never = lambda p: None  # noqa: E731
+        target = None
+        for name in sorted(os.listdir("/opt")):  # bỏ qua mục được bảo vệ (vd. /opt/containerd là runtime)
+            try:
+                target = pathrules.validate_rm_path("/opt/" + name, owner_fn=never, mount_points=[])
+                break
+            except pathrules.PathRuleError:
+                continue
+        if target is None:
+            self.skipTest("mọi mục trong /opt đều được bảo vệ")
         with self.assertRaises(pathrules.PathRuleError):
             pathrules.validate_rm_path(target, owner_fn=lambda p: "some-package", mount_points=[])
         with self.assertRaises(pathrules.PathRuleError):  # chứa điểm gắn ổ đĩa
@@ -414,6 +544,36 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(r._jobs_done, ["/opt/x"])  # dòng giả mạo (không có nonce đúng) bị bỏ qua
         self.assertIn("\ufffd", r._log[-1])
         self.assertIn("làm được", r._failure_message(Step("cmd", [], root=True), 6) + "làm được")
+
+    def _runner_after(self, lines):
+        from tt_ubuntutools.removal.runner import RemovalRunner
+
+        r = RemovalRunner(RemovalPlan(SoftwareItem(Source.DEB, "gomgo", "gomgo"), RemovalOptions()),
+                          lambda l: None, lambda res: None)
+        r._jobs_done, r._cmd_started, r._helper_error = [], False, ""
+        for line in lines:
+            r._handle_line(line)
+        return r
+
+    def test_failure_messages_name_the_cause(self):
+        apt = Step("cmd", ["apt-remove", "gomgo", "--expect", "gomgo"], root=True)
+        held = "LỖI AN TOÀN: Có gói đang bị giữ (apt-mark hold) — hãy chạy 'sudo apt-mark unhold gomgo'."
+        r = self._runner_after([b"TT-HELPER-START n1", held.encode()])
+        msg = r._failure_message(apt, 5)
+        self.assertIn("chưa gỡ gì", msg)
+        self.assertIn("apt-mark unhold gomgo", msg)
+        # apt đã chạy rồi lỗi: không được nói "chưa gỡ gì", phải gợi ý dpkg --configure -a
+        r = self._runner_after([b"TT-HELPER-START n1", b"$ /usr/bin/apt-get -o Debug::NoLocking=1 -y remove gomgo",
+                                b"E: Sub-process /usr/bin/dpkg returned an error code (1)",
+                                "LỖI: thực hiện thất bại (apt-get mã 100).".encode()])
+        msg = r._failure_message(apt, 6)
+        self.assertNotIn("chưa gỡ gì", msg)
+        self.assertIn("dpkg --configure -a", msg)
+
+    def test_progress_and_huge_lines(self):
+        r = self._runner_after([b"TT-HELPER-START n1", b"Progress: 10%\rProgress: 55%\rDone\r", b"x" * 100000])
+        self.assertEqual(r._log[-2], "Done")
+        self.assertLess(len(r._log[-1]), 5000)
 
     def test_merge_root_steps(self):
         from tt_ubuntutools.removal.runner import RemovalRunner

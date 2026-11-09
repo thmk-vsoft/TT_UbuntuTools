@@ -45,7 +45,7 @@ def make_record(plan: RemovalPlan, result: RemovalResult, when: dt.datetime | No
         "verified": result.verified,
         "exit_code": result.exit_code,
         "message": result.message,
-        "log_tail": "\n".join(result.log.splitlines()[-LOG_TAIL_LINES:]),
+        "log_tail": "\n".join(result.log.splitlines()[-LOG_TAIL_LINES:])[-16384:],
     }
     return {k: _clean(v) for k, v in rec.items()}
 

@@ -44,7 +44,7 @@ DEV_FLAG = "--dev-allow-user-code"
 APT_NAME = re.compile(r"[a-z0-9](?:[a-z0-9+.\-]*[a-z0-9+])?(?::[a-z0-9\-]+)?")  # dùng fullmatch
 SNAP_NAME = re.compile(r"[a-z0-9](?:[a-z0-9\-]{0,38}[a-z0-9])?")
 PIP_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,198}[A-Za-z0-9])?")
-NPM_NAME = re.compile(r"(@[a-z0-9][a-z0-9._~\-]*/)?[a-z0-9][a-z0-9._~\-]{0,213}")
+NPM_NAME = re.compile(r"(@[a-z0-9][a-z0-9._~\-]*/)?[A-Za-z0-9][A-Za-z0-9._~\-]{0,213}")  # gói cũ có chữ hoa
 PIP_SITE = re.compile(r"/usr/local/lib/python3\.(\d{1,2})/dist-packages")
 SIM_RE = re.compile(r"^(Remv|Purg|Inst|Conf) (\S+)")
 
@@ -58,6 +58,7 @@ ENV = {
 LOG_DIR = "/var/log/tt-ubuntutools"
 APT_GET, DPKG_QUERY, SNAP = "/usr/bin/apt-get", "/usr/bin/dpkg-query", "/usr/bin/snap"
 DPKG_FRONTEND_LOCK = "/var/lib/dpkg/lock-frontend"
+LOCK_HELD = False  # FrontendLock đang giữ khoá frontend của dpkg
 
 # ------------------------------------------------------------------ tìm mã luật bảo vệ
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -262,8 +263,12 @@ def _pathrules():
 
 
 def apt_sim_cmd(job, simulate):
-    cmd = [APT_GET]
-    cmd += ["-s", "-o", "Debug::NoLocking=1"] if simulate else ["-y", "-o", "DPkg::Lock::Timeout=60"]
+    # Helper đã giữ khoá frontend của dpkg (FrontendLock) suốt từ lúc kiểm tra tới lúc gỡ xong.
+    # apt-get KHÔNG nhận biến DPKG_FRONTEND_LOCKED, nên nếu để nó tự khoá thì nó sẽ đứng chờ chính
+    # helper (tự khoá chết). Vì vậy apt chạy với Debug::NoLocking=1; apt vẫn đặt DPKG_FRONTEND_LOCKED
+    # khi gọi dpkg, và dpkg vẫn tự lấy khoá nội bộ /var/lib/dpkg/lock của nó.
+    cmd = [APT_GET, "-o", "Debug::NoLocking=1"]
+    cmd += ["-s"] if simulate else ["-y"]
     cmd.append("remove")
     if job["purge"]:
         cmd.append("--purge")
@@ -288,14 +293,23 @@ def parse_simulation(text):
 
 
 def check_apt(job):
+    prot = _protection()
+    # apt chạy với Debug::NoLocking nên bỏ qua kiểm tra "dpkg bị ngắt giữa chừng" của nó — tự làm lại.
+    if prot.dpkg_interrupted(os.path.dirname(DPKG_FRONTEND_LOCK)):
+        raise SafetyError(prot.DPKG_INTERRUPTED_MSG)
     base = job["name"].split(":")[0]
     q = capture([DPKG_QUERY, "-W", "-f=${db:Status-Abbrev}|${binary:Package}\\n", job["name"]], 60)
     rows = [r.split("|", 1) for r in q.stdout.splitlines() if "|" in r]
-    if not any(st.startswith("ii") and pk.split(":")[0] == base for st, pk in rows):
+    mine = [st for st, pk in rows if pk.split(":")[0] == base and len(st) >= 2 and st[1] == "i"]
+    if any(st[0] == "h" for st in mine):
+        raise SafetyError(prot.held_reason(base))
+    if not any(st[0] == "i" for st in mine):
         raise SafetyError(f"Gói {job['name']} hiện không ở trạng thái đã cài (ii) — huỷ.")
     sim = capture(apt_sim_cmd(job, simulate=True), 300)
     if sim.returncode != 0:
         raise SafetyError("Mô phỏng apt thất bại: " + (sim.stderr or sim.stdout).strip()[-400:])
+    if prot.HELD_MARK in sim.stdout.lower():
+        raise SafetyError(prot.held_reason(base))
     removed, installed = parse_simulation(sim.stdout)
     if installed:
         raise SafetyError("Thao tác 'gỡ' này sẽ CÀI THÊM gói (" + ", ".join(sorted(installed)) + ") — huỷ.")
@@ -308,7 +322,6 @@ def check_apt(job):
                           + ". Hãy mở lại hộp thoại để xem trước lần nữa.")
     if "essential packages will be removed" in sim.stdout.lower():
         raise SafetyError("apt cảnh báo sẽ gỡ gói Essential — huỷ.")
-    prot = _protection()
     info, providers = {}, []
     try:
         import apt  # noqa: E402
@@ -462,12 +475,14 @@ class FrontendLock:
         self.fd = None
 
     def acquire(self, timeout=120):
+        global LOCK_HELD
         self.fd = os.open(DPKG_FRONTEND_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o640)
         deadline = time.monotonic() + timeout
         told = False
         while True:
             try:
                 fcntl.lockf(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                LOCK_HELD = True
                 return
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN):
@@ -480,6 +495,8 @@ class FrontendLock:
             time.sleep(1)
 
     def release(self):
+        global LOCK_HELD
+        LOCK_HELD = False
         if self.fd is not None:
             try:
                 fcntl.lockf(self.fd, fcntl.LOCK_UN)
@@ -492,6 +509,9 @@ def run_job(job):
     """Thực hiện một hành động. Trả về (thành_công, mô_tả)."""
     a = job["action"]
     if a == "apt-remove":
+        if not LOCK_HELD:  # chỉ được chạy apt không khoá khi helper thật sự đang giữ khoá frontend
+            OUT.line("LỖI: helper không giữ khoá dpkg — không chạy apt.")
+            return False, "không giữ khoá dpkg"
         env = dict(ENV, DPKG_FRONTEND_LOCKED="1")  # helper đang giữ khoá frontend
         code = relay(apt_sim_cmd(job, simulate=False), env=env)
         return code == 0, f"apt-get mã {code}"
