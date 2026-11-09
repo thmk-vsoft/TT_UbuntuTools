@@ -1,0 +1,584 @@
+#!/usr/bin/python3 -IB
+"""Helper đặc quyền của TT_UbuntuTools — chỉ được gọi qua pkexec.
+
+Hành động (nhiều hành động trong một lần xác thực được ngăn cách bằng '::'):
+
+  apt-remove   <gói> [--purge] [--autoremove] --expect <gói1,gói2,...>
+  snap-remove  <snap> [--purge]
+  rm-path      <đường_dẫn>
+  pip-remove   <tên> --site /usr/local/lib/python3.N/dist-packages
+  npm-remove   <tên> --prefix <thư_mục_npm_toàn_cục>
+
+Nguyên tắc an toàn:
+  * Kiểm tra cú pháp TẤT CẢ hành động trước, rồi kiểm tra an toàn (mô phỏng apt, luật bảo vệ,
+    luật đường dẫn) cho TẤT CẢ trước khi thực hiện bất cứ thứ gì.
+  * apt: chỉ gỡ khi tập gói mô phỏng ngay lúc này KHỚP ĐÚNG tập người dùng đã xem trước (--expect),
+    không có gói nào bị cài thêm, và không gói nào vi phạm luật bảo vệ.
+  * Output của apt/dpkg được helper chuyển tiếp; nếu giao diện bị đóng giữa chừng, helper vẫn đọc
+    hết output (ghi vào /var/log/tt-ubuntutools/) để dpkg không bao giờ bị ngắt giữa chừng.
+
+Mã thoát: 0 ok · 2 tham số sai · 3 không phải root · 5 kiểm tra an toàn thất bại (chưa làm gì)
+          · 6 lỗi trong lúc thực hiện (có thể đã làm được một phần — xem các dòng TT-JOB-DONE).
+"""
+
+import errno
+import fcntl
+import os
+import re
+import secrets
+import select
+import signal
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True  # chạy bằng root: không ghi __pycache__
+
+MARKER = "TT-HELPER-START"
+NONCE = secrets.token_hex(8)  # chống giả mạo dòng TT-JOB-DONE từ output của lệnh con
+SEPARATOR = "::"
+EXIT_USAGE, EXIT_NOT_ROOT, EXIT_TOOL, EXIT_SAFETY, EXIT_RUN = 2, 3, 4, 5, 6
+JOB_DONE = "TT-JOB-DONE"
+DEV_FLAG = "--dev-allow-user-code"
+
+APT_NAME = re.compile(r"[a-z0-9](?:[a-z0-9+.\-]*[a-z0-9+])?(?::[a-z0-9\-]+)?")  # dùng fullmatch
+SNAP_NAME = re.compile(r"[a-z0-9](?:[a-z0-9\-]{0,38}[a-z0-9])?")
+PIP_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,198}[A-Za-z0-9])?")
+NPM_NAME = re.compile(r"(@[a-z0-9][a-z0-9._~\-]*/)?[a-z0-9][a-z0-9._~\-]{0,213}")
+PIP_SITE = re.compile(r"/usr/local/lib/python3\.(\d{1,2})/dist-packages")
+SIM_RE = re.compile(r"^(Remv|Purg|Inst|Conf) (\S+)")
+
+ENV = {
+    "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+    "LC_ALL": "C.UTF-8",
+    "LANG": "C.UTF-8",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "HOME": "/root",
+}
+LOG_DIR = "/var/log/tt-ubuntutools"
+APT_GET, DPKG_QUERY, SNAP = "/usr/bin/apt-get", "/usr/bin/dpkg-query", "/usr/bin/snap"
+DPKG_FRONTEND_LOCK = "/var/lib/dpkg/lock-frontend"
+
+# ------------------------------------------------------------------ tìm mã luật bảo vệ
+HERE = os.path.dirname(os.path.realpath(__file__))
+for _cand in (HERE, os.path.dirname(HERE)):
+    if os.path.isfile(os.path.join(_cand, "tt_ubuntutools", "removal", "protection.py")):
+        sys.path.insert(0, _cand)
+        PKG_ROOT = _cand
+        break
+else:
+    PKG_ROOT = None
+
+
+class UsageError(Exception):
+    pass
+
+
+class SafetyError(Exception):
+    pass
+
+
+# ------------------------------------------------------------------ output an toàn
+class Out:
+    """Ghi ra stdout (pipe tới giao diện). Nếu giao diện đã đóng (EPIPE) thì chuyển sang ghi log."""
+
+    def __init__(self):
+        self.broken = False
+        self.log = None
+        self.last = b"\n"
+
+    def _open_log(self):
+        if self.log is None:
+            try:
+                os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
+                path = os.path.join(LOG_DIR, time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}.log")
+                self.log = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            except OSError:
+                self.log = -1
+
+    def write(self, data: bytes):
+        if data:
+            self.last = data[-1:]
+        if not self.broken:
+            try:
+                view = memoryview(data)
+                while view:
+                    n = os.write(1, view)
+                    view = view[n:]
+                return
+            except OSError:
+                self.broken = True  # giao diện đã đóng / pipe lỗi: chuyển sang ghi log, không bao giờ dừng
+        self._open_log()
+        if self.log and self.log > 0:
+            try:
+                os.write(self.log, data)
+            except OSError:
+                pass
+
+    def line(self, text: str):
+        self.write((text + "\n").encode("utf-8", "replace"))
+
+    def marker(self, text: str):
+        """Dòng điều khiển luôn bắt đầu ở đầu dòng mới."""
+        if self.last != b"\n":
+            self.write(b"\n")
+        self.line(text)
+
+
+OUT = Out()
+
+
+def _child_signals():
+    for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+        signal.signal(sig, signal.SIG_DFL)
+
+
+def relay(cmd, env=None):
+    """Chạy lệnh con, chuyển tiếp output; luôn đọc tới hết để lệnh con không nhận SIGPIPE.
+    Trả về mã thoát của lệnh con."""
+    OUT.line("$ " + " ".join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, env=env or ENV, start_new_session=True,
+                                close_fds=True, preexec_fn=_child_signals)
+    except FileNotFoundError:
+        OUT.line(f"LỖI: không tìm thấy lệnh {cmd[0]}")
+        return None
+    fd = proc.stdout.fileno()
+    exited_at = None
+    while True:
+        ready, _, _ = select.select([fd], [], [], 0.5)
+        if ready:
+            try:
+                chunk = os.read(fd, 65536)
+            except InterruptedError:
+                chunk = None
+            if chunk == b"":
+                break
+            if chunk:
+                OUT.write(chunk)
+        if proc.poll() is not None:
+            # Lệnh con đã thoát; tiến trình nền có thể vẫn giữ stdout: đọc thêm tối đa 3 giây rồi thôi.
+            exited_at = exited_at or time.monotonic()
+            if time.monotonic() - exited_at > 3:
+                break
+    proc.stdout.close()
+    return proc.wait()
+
+
+def capture(cmd, timeout=300):
+    return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=ENV, timeout=timeout)
+
+
+# ------------------------------------------------------------------ cú pháp
+def _parse_opts(args, flags=(), valued=()):
+    out, i = {}, 0
+    while i < len(args):
+        a = args[i]
+        if a in flags:
+            out[a] = True
+            i += 1
+        elif a in valued:
+            if i + 1 >= len(args):
+                raise UsageError(f"Thiếu giá trị cho {a}.")
+            out[a] = args[i + 1]
+            i += 2
+        else:
+            raise UsageError(f"Tuỳ chọn không hợp lệ: {a!r}")
+    return out
+
+
+def build(argv):
+    """Kiểm tra cú pháp một hành động -> dict mô tả. Không chạm vào hệ thống."""
+    if not argv:
+        raise UsageError("Thiếu hành động.")
+    action, args = argv[0], argv[1:]
+    if action == "apt-remove":
+        if not args or not APT_NAME.fullmatch(args[0]):
+            raise UsageError("Tên gói apt không hợp lệ.")
+        o = _parse_opts(args[1:], flags=("--purge", "--autoremove"), valued=("--expect",))
+        expect = [e for e in o.get("--expect", "").split(",") if e]
+        if not expect or not all(APT_NAME.fullmatch(e) for e in expect):
+            raise UsageError("--expect phải là danh sách gói hợp lệ, ngăn cách bằng dấu phẩy.")
+        return {"action": action, "name": args[0], "purge": "--purge" in o,
+                "autoremove": "--autoremove" in o, "expect": sorted({e.split(":")[0] for e in expect})}
+    if action == "snap-remove":
+        if not args or not SNAP_NAME.fullmatch(args[0]):
+            raise UsageError("Tên snap không hợp lệ.")
+        o = _parse_opts(args[1:], flags=("--purge",))
+        return {"action": action, "name": args[0], "purge": "--purge" in o}
+    if action == "rm-path":
+        if len(args) != 1:
+            raise UsageError("rm-path cần đúng một đường dẫn.")
+        if not args[0].startswith("/"):
+            raise UsageError("Đường dẫn phải là tuyệt đối.")
+        return {"action": action, "path": args[0]}
+    if action == "pip-remove":
+        if not args or not PIP_NAME.fullmatch(args[0]):
+            raise UsageError("Tên gói Python không hợp lệ.")
+        o = _parse_opts(args[1:], valued=("--site",))
+        m = PIP_SITE.fullmatch(o.get("--site", ""))
+        if not m:
+            raise UsageError("--site phải là /usr/local/lib/python3.N/dist-packages.")
+        return {"action": action, "name": args[0], "site": o["--site"], "pyver": m.group(1)}
+    if action == "npm-remove":
+        if not args or not NPM_NAME.fullmatch(args[0]):
+            raise UsageError("Tên gói npm không hợp lệ.")
+        o = _parse_opts(args[1:], valued=("--prefix",))
+        prefix = o.get("--prefix", "")
+        if not prefix.startswith("/") or os.path.normpath(prefix) != prefix or \
+                prefix == "/" or prefix.startswith(("/home/", "/root", "/tmp", "/var/tmp")):
+            raise UsageError("--prefix không hợp lệ.")
+        return {"action": action, "name": args[0], "prefix": prefix}
+    raise UsageError(f"Hành động không được hỗ trợ: {action!r}")
+
+
+def split_actions(argv):
+    groups, cur = [], []
+    for a in argv:
+        if a == SEPARATOR:
+            groups.append(cur)
+            cur = []
+        else:
+            cur.append(a)
+    groups.append(cur)
+    return groups
+
+
+# ------------------------------------------------------------------ kiểm tra an toàn (cần root)
+def _protection():
+    if PKG_ROOT is None:
+        raise SafetyError("Không tìm thấy mã luật bảo vệ đi kèm helper.")
+    from tt_ubuntutools.removal import protection  # noqa: E402
+    return protection
+
+
+def _pathrules():
+    if PKG_ROOT is None:
+        raise SafetyError("Không tìm thấy mã luật đường dẫn đi kèm helper.")
+    from tt_ubuntutools.removal import pathrules  # noqa: E402
+    return pathrules
+
+
+def apt_sim_cmd(job, simulate):
+    cmd = [APT_GET]
+    cmd += ["-s", "-o", "Debug::NoLocking=1"] if simulate else ["-y", "-o", "DPkg::Lock::Timeout=60"]
+    cmd.append("remove")
+    if job["purge"]:
+        cmd.append("--purge")
+    if job["autoremove"]:
+        cmd.append("--autoremove")
+    cmd.append(job["name"])
+    return cmd
+
+
+def parse_simulation(text):
+    removed, installed = set(), set()
+    for line in text.splitlines():
+        m = SIM_RE.match(line.strip())
+        if not m:
+            continue
+        name = m.group(2).split(":")[0]
+        if m.group(1) in ("Remv", "Purg"):
+            removed.add(name)
+        elif m.group(1) == "Inst":
+            installed.add(name)
+    return removed, installed
+
+
+def check_apt(job):
+    base = job["name"].split(":")[0]
+    q = capture([DPKG_QUERY, "-W", "-f=${db:Status-Abbrev}|${binary:Package}\\n", job["name"]], 60)
+    rows = [r.split("|", 1) for r in q.stdout.splitlines() if "|" in r]
+    if not any(st.startswith("ii") and pk.split(":")[0] == base for st, pk in rows):
+        raise SafetyError(f"Gói {job['name']} hiện không ở trạng thái đã cài (ii) — huỷ.")
+    sim = capture(apt_sim_cmd(job, simulate=True), 300)
+    if sim.returncode != 0:
+        raise SafetyError("Mô phỏng apt thất bại: " + (sim.stderr or sim.stdout).strip()[-400:])
+    removed, installed = parse_simulation(sim.stdout)
+    if installed:
+        raise SafetyError("Thao tác 'gỡ' này sẽ CÀI THÊM gói (" + ", ".join(sorted(installed)) + ") — huỷ.")
+    if sorted(removed) != job["expect"]:
+        extra = sorted(set(removed) - set(job["expect"]))
+        missing = sorted(set(job["expect"]) - set(removed))
+        raise SafetyError("Danh sách gói sẽ bị gỡ đã thay đổi so với lúc xem trước"
+                          + (f"; thêm: {', '.join(extra)}" if extra else "")
+                          + (f"; bớt: {', '.join(missing)}" if missing else "")
+                          + ". Hãy mở lại hộp thoại để xem trước lần nữa.")
+    if "essential packages will be removed" in sim.stdout.lower():
+        raise SafetyError("apt cảnh báo sẽ gỡ gói Essential — huỷ.")
+    prot = _protection()
+    info, providers = {}, []
+    try:
+        import apt  # noqa: E402
+
+        cache = apt.Cache()
+        for n in removed:
+            if n in cache and cache[n].is_installed:
+                p = cache[n]
+                info[n] = (bool(p.essential), p.installed.priority or "")
+        providers = prot.installed_initramfs_providers(cache)
+    except ImportError:
+        # Không có python3-apt: lấy Essential/Priority từ dpkg (fail-closed nếu cũng lỗi).
+        q2 = capture([DPKG_QUERY, "-W", "-f=${Package}\t${Essential}\t${Priority}\n", *sorted(removed)], 60)
+        if q2.returncode not in (0, 1):
+            raise SafetyError("Không đọc được thông tin Essential/Priority của các gói.")
+        for row in q2.stdout.splitlines():
+            parts = row.split("\t")
+            if len(parts) == 3:
+                info[parts[0].split(":")[0]] = (parts[1] == "yes", parts[2])
+        missing = [n for n in removed if n not in info]
+        if missing:
+            raise SafetyError("Không đọc được thông tin của: " + ", ".join(missing))
+        q3 = capture([DPKG_QUERY, "-W", "-f=${db:Status-Abbrev}|${Package}|${Provides}\n"], 120)
+        if q3.returncode != 0:
+            raise SafetyError("Không đọc được danh sách gói cung cấp initramfs.")
+        providers = sorted({r.split("|")[1] for r in q3.stdout.splitlines()
+                            if r.count("|") >= 2 and r.startswith("ii") and "linux-initramfs-tool" in r.split("|")[2]})
+    reasons = prot.check_apt_removal(sorted(removed), info, purge=job["purge"],
+                                     initramfs_providers=providers,
+                                     dynamic=prot.active_session_packages())
+    if reasons:
+        raise SafetyError("Bị chặn bởi luật bảo vệ: " + " | ".join(reasons))
+
+
+def check_snap(job):
+    prot = _protection()
+    from tt_ubuntutools.utils import snap_content_providers, snapd_get  # noqa: E402
+
+    try:
+        info = snapd_get(f"/v2/snaps/{job['name']}")
+        snaps = snapd_get("/v2/snaps") or []
+        conns = snapd_get("/v2/connections?select=all") or {}
+    except Exception as exc:
+        raise SafetyError(f"Không hỏi được snapd: {exc}")
+    users = sorted({s["name"] for s in snaps if s.get("base") == job["name"]})
+    consumers = sorted(snap_content_providers(conns).get(job["name"], set()))
+    r = prot.snap_reason(job["name"], info.get("type", ""), consumers, users)
+    if r:
+        raise SafetyError("Bị chặn bởi luật bảo vệ: " + r)
+    if job["purge"]:
+        pr = prot.purge_reason(job["name"])
+        if pr:
+            raise SafetyError(pr)
+
+
+def check_rm(job):
+    pr = _pathrules()
+    try:
+        job["path"] = pr.validate_rm_path(job["path"])
+    except pr.PathRuleError as exc:
+        raise SafetyError(str(exc))
+
+
+def _dist_present(site, name):
+    import importlib.metadata as md
+
+    norm = re.sub(r"[-_.]+", "-", name).lower()
+    for d in md.distributions(path=[site]):
+        dn = re.sub(r"[-_.]+", "-", (d.metadata.get("Name") or "")).lower()
+        if dn == norm:
+            return True
+    return False
+
+
+def check_pip(job):
+    py = f"/usr/bin/python3.{job['pyver']}"
+    if not os.path.isfile(py):
+        raise SafetyError(f"{py} không còn trên máy — site-packages này mồ côi, pip không gỡ được.")
+    if os.path.realpath(job["site"]) != job["site"] or not os.path.isdir(job["site"]):
+        raise SafetyError("Thư mục site-packages không hợp lệ.")
+    if not _root_owned_nofollow(job["site"]):
+        raise SafetyError("site-packages không thuộc root hoặc người khác ghi được — từ chối chạy pip bằng root.")
+    if not _dist_present(job["site"], job["name"]):
+        raise SafetyError(f"Không thấy gói {job['name']} trong {job['site']}.")
+    if capture([py, "-I", "-m", "pip", "--version"], 60).returncode != 0:
+        raise SafetyError(f"{py} chưa có pip (cài gói python3-pip).")
+    job["python"] = py
+
+
+def check_npm(job):
+    prefix = job["prefix"]
+    if os.path.realpath(prefix) != prefix or not os.path.isdir(prefix):
+        raise SafetyError("Thư mục prefix npm không hợp lệ.")
+    st = os.stat(prefix)
+    if st.st_uid != 0 or st.st_mode & 0o022:
+        raise SafetyError("Prefix npm không thuộc root hoặc ai cũng ghi được — từ chối chạy bằng root.")
+    pkg_dir = os.path.join(prefix, "lib", "node_modules", job["name"])
+    if not os.path.isdir(pkg_dir):
+        raise SafetyError(f"Không thấy gói {job['name']} trong {prefix}/lib/node_modules.")
+    if not (_root_owned_nofollow(prefix) and _root_owned_nofollow(pkg_dir)):
+        raise SafetyError("Thư mục npm toàn cục (hoặc gói) không thuộc root / người khác ghi được — "
+                          "từ chối chạy npm bằng root. Hãy gỡ bằng npm trong terminal.")
+    for npm, node in ((os.path.join(prefix, "bin", "npm"), os.path.join(prefix, "bin", "node")),
+                      ("/usr/bin/npm", "/usr/bin/node")):
+        if os.path.isfile(npm) and os.path.isfile(node) and _root_owned_chain(os.path.realpath(npm)) \
+                and _root_owned_chain(os.path.realpath(node)):
+            job["npm"], job["node"] = os.path.realpath(npm), os.path.realpath(node)
+            return
+    raise SafetyError("Không tìm thấy npm/node thuộc root (cả cây thư mục) — từ chối chạy bằng root.")
+
+
+def _root_owned_nofollow(path):
+    """path và mọi thư mục cha: thuộc root, không cho nhóm/người khác ghi, KHÔNG phải symlink."""
+    p = path
+    while True:
+        try:
+            st = os.lstat(p)
+        except OSError:
+            return False
+        if os.path.islink(p) or st.st_uid != 0 or st.st_mode & 0o022:
+            return False
+        if p == "/":
+            return True
+        p = os.path.dirname(p)
+
+
+def _root_owned_chain(path):
+    p = path
+    while True:
+        try:
+            st = os.stat(p)
+        except OSError:
+            return False
+        if st.st_uid != 0 or st.st_mode & 0o022:
+            return False
+        if p == "/":
+            return True
+        p = os.path.dirname(p)
+
+
+CHECKS = {"apt-remove": check_apt, "snap-remove": check_snap, "rm-path": check_rm,
+          "pip-remove": check_pip, "npm-remove": check_npm}
+
+
+# ------------------------------------------------------------------ thực thi
+class FrontendLock:
+    """Giữ khoá frontend của dpkg suốt từ lúc mô phỏng tới lúc gỡ xong, để không chương trình nào
+    (unattended-upgrades, apt khác) thay đổi hệ thống ở giữa — kết quả xem trước luôn còn đúng."""
+
+    def __init__(self):
+        self.fd = None
+
+    def acquire(self, timeout=120):
+        self.fd = os.open(DPKG_FRONTEND_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o640)
+        deadline = time.monotonic() + timeout
+        told = False
+        while True:
+            try:
+                fcntl.lockf(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise SafetyError(f"Không khoá được dpkg: {exc}")
+            if not told:
+                OUT.line("… apt/dpkg đang bận ở chương trình khác (có thể là cập nhật tự động) — đang chờ tối đa 2 phút.")
+                told = True
+            if time.monotonic() > deadline:
+                raise SafetyError("apt/dpkg vẫn đang bận sau 2 phút — chưa gỡ gì, hãy thử lại sau.")
+            time.sleep(1)
+
+    def release(self):
+        if self.fd is not None:
+            try:
+                fcntl.lockf(self.fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self.fd)
+                self.fd = None
+
+
+def run_job(job):
+    """Thực hiện một hành động. Trả về (thành_công, mô_tả)."""
+    a = job["action"]
+    if a == "apt-remove":
+        env = dict(ENV, DPKG_FRONTEND_LOCKED="1")  # helper đang giữ khoá frontend
+        code = relay(apt_sim_cmd(job, simulate=False), env=env)
+        return code == 0, f"apt-get mã {code}"
+    if a == "snap-remove":
+        code = relay([SNAP, "remove"] + (["--purge"] if job["purge"] else []) + [job["name"]])
+        return code == 0, f"snap mã {code}"
+    if a == "rm-path":
+        pr = _pathrules()
+        try:
+            path = pr.validate_rm_path(job["path"])  # kiểm tra lại ngay trước khi xoá
+            OUT.line(f"$ xoá {path}")
+            n = pr.safe_remove(path)
+        except (pr.PathRuleError, OSError) as exc:
+            OUT.line(f"LỖI: {exc}")
+            return False, str(exc)
+        OUT.line(f"Đã xoá {path} ({n} mục)")
+        return True, path
+    if a == "pip-remove":
+        code = relay([job["python"], "-I", "-m", "pip", "uninstall", "-y", "--break-system-packages",
+                      job["name"]])
+        if code == 0 and _dist_present(job["site"], job["name"]):
+            OUT.line("LỖI: pip báo xong nhưng gói vẫn còn.")
+            return False, "pip: gói vẫn còn"
+        return code == 0, f"pip mã {code}"
+    if a == "npm-remove":
+        env = dict(ENV, PATH=os.path.dirname(job["node"]) + ":" + ENV["PATH"])
+        code = relay([job["node"], job["npm"], "--prefix", job["prefix"], "uninstall", "-g", job["name"]], env=env)
+        if code == 0 and os.path.isdir(os.path.join(job["prefix"], "lib", "node_modules", job["name"])):
+            OUT.line("LỖI: npm báo xong nhưng gói vẫn còn.")
+            return False, "npm: gói vẫn còn"
+        return code == 0, f"npm mã {code}"
+    return False, "hành động lạ"
+
+
+def _describe(job):
+    return job.get("path") or f"{job['action']} {job.get('name', '')}".strip()
+
+
+def main(argv):
+    OUT.line(f"{MARKER} {NONCE}")
+    dev = bool(argv) and argv[0] == DEV_FLAG
+    if dev:
+        argv = argv[1:]
+    try:
+        jobs = [build(g) for g in split_actions(argv)]
+    except UsageError as exc:
+        OUT.line(f"LỖI: {exc}")
+        return EXIT_USAGE
+    if os.geteuid() != 0:
+        OUT.line("LỖI: helper cần chạy với quyền root (qua pkexec).")
+        return EXIT_NOT_ROOT
+    # Không để tín hiệu từ phiên làm việc (đóng cửa sổ, Ctrl+C, đăng xuất) cắt ngang dpkg.
+    for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM, signal.SIGPIPE):
+        signal.signal(sig, signal.SIG_IGN)
+    os.umask(0o022)
+    if PKG_ROOT is None or not _root_owned_chain(os.path.join(PKG_ROOT, "tt_ubuntutools")):
+        if not dev:
+            OUT.line("LỖI AN TOÀN: mã luật bảo vệ không thuộc root — từ chối chạy bằng quyền root.")
+            return EXIT_SAFETY
+        OUT.line("CẢNH BÁO: chế độ phát triển — đang chạy mã người dùng có thể sửa bằng quyền root.")
+    lock = FrontendLock()
+    started = False  # đã thực hiện ít nhất một hành động -> lỗi sau đó là "làm được một phần"
+    try:
+        if any(j["action"] == "apt-remove" for j in jobs):
+            lock.acquire()
+        # Kiểm tra an toàn TẤT CẢ trước khi làm bất cứ gì.
+        for job in jobs:
+            CHECKS[job["action"]](job)
+        for i, job in enumerate(jobs):
+            if i > 0:
+                CHECKS[job["action"]](job)  # trạng thái có thể đã đổi sau hành động trước
+            started = True
+            ok, info = run_job(job)
+            if not ok:
+                OUT.line(f"LỖI: thực hiện thất bại ({info}).")
+                return EXIT_RUN
+            OUT.marker(f"{JOB_DONE} {NONCE} {i} {_describe(job)}")
+    except SafetyError as exc:
+        OUT.line(f"LỖI AN TOÀN: {exc}")
+        return EXIT_RUN if started else EXIT_SAFETY
+    except Exception as exc:  # lỗi không lường trước: dừng ngay
+        OUT.line(f"LỖI: gặp lỗi bất ngờ ({type(exc).__name__}: {exc}) — dừng.")
+        return EXIT_RUN if started else EXIT_SAFETY
+    finally:
+        lock.release()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

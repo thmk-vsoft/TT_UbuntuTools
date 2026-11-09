@@ -1,0 +1,65 @@
+# TT_UbuntuTools
+
+Công cụ đồ hoạ (GTK4 / libadwaita) để **thống kê phần mềm đã cài trên Ubuntu** theo phương thức cài và **gỡ phần mềm không cần thiết** một cách an toàn.
+
+- Bản quyền phần mềm: **THMK V-Soft** · Liên hệ: **ttvn92i2026@gmail.com**
+- **Buy me a coffee ☕**: ủng hộ dự án nếu bạn thấy phần mềm hữu ích — nút **Đóng góp dự án** trong phần mềm.
+
+## Tính năng
+- Nguồn: APT (kho Ubuntu) · PPA / kho bên thứ ba · file `.deb` cài tay · Snap · Flatpak · AppImage · pip/pipx · npm toàn cục · cài thủ công (`/opt`, `/usr/local/bin`). Nguồn nào máy không có thì tự bỏ qua.
+- Cột: tên + biểu tượng + mô tả, phương thức, phiên bản, dung lượng, ngày cài, nguồn kho. Sắp xếp theo cột, tìm kiếm, lọc theo nguồn.
+- Chế độ **Ứng dụng** (mặc định: có lối tắt menu hoặc do bạn tự cài) / **Tất cả gói**.
+- Gỡ **từng** phần mềm: xem trước toàn bộ gói bị gỡ theo, tuỳ chọn purge / autoremove, báo kết quả và kiểm tra lại, lưu **lịch sử** (`~/.local/share/tt-ubuntutools/history.jsonl`).
+
+## An toàn
+- **Luật bảo vệ** chặn gỡ: gói Essential / required / important; kernel đang chạy và gói kernel chính; bootloader, công cụ initramfs (dracut, initramfs-tools), công cụ ổ đĩa (cryptsetup, lvm2, mdadm, zfs, btrfs); firmware; mạng; desktop và màn hình đăng nhập của GNOME, KDE, Xfce, LXQt, MATE, Cinnamon, Budgie; trình đăng nhập và các phiên desktop đã cài trên chính máy bạn; polkit agent đang chạy; SSH / RDP / chia sẻ màn hình GNOME khi dịch vụ đó đang bật hoặc đang có phiên điều khiển từ xa; nền tảng snap (snapd, apparmor); snap nền / snap dùng chung; thư mục runtime của dịch vụ và chương trình đang được dịch vụ systemd dùng.
+- Purge các phần mềm máy chủ có dữ liệu (PostgreSQL, MySQL/MariaDB, Docker…) bị chặn để tránh mất dữ liệu.
+- Thao tác cần quyền quản trị chạy qua `pkexec` + helper chỉ nhận một số hành động cố định. Helper **kiểm tra lại** mọi thứ bằng quyền root ngay trước khi gỡ: apt chỉ chạy khi danh sách gói bị gỡ **khớp đúng** danh sách bạn đã xem trước và không cài thêm gói nào; không bao giờ xoá xuyên qua ổ đĩa/ổ mạng được gắn vào.
+- Mỗi lần gỡ đều hỏi mật khẩu (không nhớ quyền giữa các lần); hộp thoại mật khẩu ghi rõ lệnh sẽ chạy. Cần một polkit agent (có sẵn trong GNOME, KDE, Xfce…). Riêng flatpak cài cho toàn hệ thống do flatpak tự hỏi quyền theo quy tắc riêng.
+- Helper giữ khoá của dpkg từ lúc kiểm tra tới lúc gỡ xong, nên chương trình cập nhật tự động không chen vào làm sai kết quả xem trước.
+- Trong lúc đang gỡ, ứng dụng không cho thoát và xin hệ thống hoãn đăng xuất / ngủ; nếu cửa sổ vẫn bị đóng bất thường, helper tiếp tục chạy apt/dpkg tới cùng và ghi nhật ký vào `/var/log/tt-ubuntutools/`.
+- File trong thư mục người dùng (AppImage…) được chuyển vào **Thùng rác**; mục trong `/opt` bị xoá vĩnh viễn (có cảnh báo trước).
+
+> Công cụ gỡ phần mềm khỏi hệ thống. Hãy luôn đọc kỹ danh sách ở bước xem trước trước khi bấm **Gỡ cài đặt**.
+
+## Yêu cầu
+Ubuntu **24.04 LTS trở lên** (libadwaita ≥ 1.5, GTK ≥ 4.12), Python 3.10+. Đã thử trên Ubuntu 26.04 GNOME.
+
+## Cài đặt
+Tải file `tt-ubuntutools_<phiên bản>_all.deb` ở trang **Releases**, kiểm tra mã SHA-256 rồi cài:
+```bash
+sha256sum -c tt-ubuntutools_0.1.0_all.deb.sha256
+```
+```bash
+sudo apt install ./tt-ubuntutools_0.1.0_all.deb
+```
+Sau khi cài, mở **TT_UbuntuTools** từ menu ứng dụng hoặc chạy `tt-ubuntutools`. Không chạy bằng `sudo`.
+
+## Tự đóng gói từ mã nguồn
+```bash
+bash packaging/build-deb.sh
+```
+
+## Dành cho nhà phát triển
+Chạy thử giao diện từ mã nguồn (thao tác cần quyền quản trị chỉ hoạt động khi đã cài file .deb; thao tác không cần root như chuyển AppImage vào Thùng rác vẫn chạy):
+```bash
+python3 -m tt_ubuntutools
+```
+Để thử gỡ bằng helper ngay trong thư mục mã nguồn (chỉ khi phát triển — helper sẽ chạy mã trong thư mục của bạn bằng quyền root, đừng dùng trên máy dùng chung):
+```bash
+TT_DEV_HELPER=1 python3 -m tt_ubuntutools
+```
+Chạy kiểm thử:
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+## Cấu trúc
+- `tt_ubuntutools/collectors/` — mỗi nguồn cài đặt một bộ thu thập
+- `tt_ubuntutools/removal/` — lập kế hoạch gỡ, luật bảo vệ, luật đường dẫn, chạy gỡ
+- `tt_ubuntutools/ui/` — giao diện (kèm phần Đóng góp dự án theo DonateKit)
+- `helper/tt-ubuntutools-helper` — helper chạy bằng quyền root qua pkexec
+- `data/` — file `.desktop`, biểu tượng, polkit policy
+
+## Bản quyền
+© 2026 THMK V-Soft. Bảo lưu mọi quyền. Xem [LICENSE](LICENSE).
