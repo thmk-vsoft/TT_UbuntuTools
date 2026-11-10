@@ -9,7 +9,8 @@ from gi.repository import Adw, Gio, GLib, Gtk, Pango
 from .. import APP_NAME
 from ..collectors import CollectResult, collect_all
 from ..models import RemovalResult, SoftwareItem, Source, human_size
-from .common import SOURCE_ICONS, ScopeSwitcher, make_spinner, make_toast
+from .cleanup_view import CleanupView
+from .common import SOURCE_ICONS, ScopeSwitcher, SectionSwitcher, make_spinner, make_toast
 from .donate import donate_button
 from .details_pane import DetailsPane
 from .remove_dialog import RemoveDialog
@@ -44,39 +45,120 @@ class SidebarRow(Gtk.ListBoxRow):
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application):
         super().__init__(application=app, title=APP_NAME, default_width=1320, default_height=820)
-        self.set_size_request(380, 400)
+        self.set_size_request(500, 400)  # thanh trên cùng (2 thẻ + nút cửa sổ) cần ~483 px
         self.result: CollectResult | None = None
         self._loading = False
         self._reload_pending = False
         self.connect("close-request", self._on_close_request)
 
         self.toasts = Adw.ToastOverlay()
+        outer = Adw.ToolbarView()
+        self._build_top_header()
+        outer.add_top_bar(self.top_header)
+        # Hai khu vực ngang hàng, cùng bố cục: nhóm bên trái · bảng ở giữa · chi tiết bên phải.
+        self.sections = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True,
+                                  hhomogeneous=False, vhomogeneous=False)
         self.split = Adw.NavigationSplitView(min_sidebar_width=230, max_sidebar_width=290)
-        self.toasts.set_child(self.split)
+        self.sections.add_named(self.split, "software")
+        self.cleanup_view = CleanupView()
+        self.cleanup_view.connect("run-requested", lambda _v, items: self.run_cleanup(items))
+        self.cleanup_view.connect("summary-changed", self._on_cleanup_summary)
+        self.sections.add_named(self.cleanup_view, "cleanup")
+        outer.set_content(self.sections)
+        self.toasts.set_child(outer)
         self.set_content(self.toasts)
 
         self._build_sidebar()
         self._build_content()
 
-        # Cửa sổ hẹp: thu khung chi tiết thành lớp phủ; rất hẹp: thu cả sidebar nguồn.
-        bp2 = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 1150sp"))
-        bp2.add_setter(self.details_split, "collapsed", True)
-        bp2.add_setter(self.details_split, "show-sidebar", False)
+        # Mốc co giãn: Adw chỉ áp dụng MỘT mốc (mốc thêm sau cùng còn khớp), nên mỗi mốc mang đủ mọi thay đổi
+        # cho khoảng của nó. 1150: thu khung chi tiết · 1000: + nút Đóng góp chỉ còn trái tim, nút chọn thành biểu
+        # tượng · 760: + thu thanh bên, ẩn tên app ở thanh trên.
+        cv = self.cleanup_view
+
+        def details(bp):
+            for ds in (self.details_split, cv.details_split):
+                bp.add_setter(ds, "collapsed", True)
+                bp.add_setter(ds, "show-sidebar", False)
+
+        def compact(bp):
+            bp.add_setter(self._donate_label, "visible", False)
+            for full, icon in ((cv.pick_safe, cv.pick_safe_icon), (cv.pick_none, cv.pick_none_icon)):
+                bp.add_setter(full, "visible", False)
+                bp.add_setter(icon, "visible", True)
+
+        bp1 = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 1150sp"))
+        details(bp1)
+        self.add_breakpoint(bp1)
+        bp2 = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 1000sp"))
+        details(bp2)
+        compact(bp2)
         self.add_breakpoint(bp2)
-        self.add_breakpoint(self._donate_compact)
-        bp = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 760sp"))
-        bp.add_setter(self.split, "collapsed", True)
-        bp.add_setter(self.details_split, "collapsed", True)
-        bp.add_setter(self.details_split, "show-sidebar", False)
-        self.add_breakpoint(bp)
+        bp3 = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 760sp"))
+        details(bp3)
+        compact(bp3)
+        bp3.add_setter(self.split, "collapsed", True)
+        bp3.add_setter(cv.split, "collapsed", True)
+        bp3.add_setter(self._app_name, "visible", False)
+        self.add_breakpoint(bp3)
         self._setup_actions()
         self.reload()
+        # Quét Dọn dẹp ngầm (chỉ đọc) sau khi danh sách phần mềm bắt đầu tải — để thẻ hiện số GB có thể dọn.
+        GLib.timeout_add(1500, lambda: (self.cleanup_view.scan(), False)[1])
+
+    # =================== Thanh trên cùng: hai khu vực ===================
+    def _build_top_header(self):
+        self.top_header = Adw.HeaderBar()
+        self._app_name = Gtk.Label(label=APP_NAME, margin_start=6)
+        self._app_name.add_css_class("heading")
+        self.top_header.pack_start(self._app_name)
+        self.section_switcher = SectionSwitcher([
+            ("software", "system-software-install-symbolic", "Gỡ cài đặt", "Phần mềm đã cài — xem và gỡ"),
+            ("cleanup", "edit-clear-all-symbolic", "Dọn dẹp", "Dữ liệu thừa có thể dọn (Ctrl+K)"),
+        ], "software")
+        self.section_switcher.connect("changed", lambda _s, n: self.show_section(n))
+        self.top_header.set_title_widget(self.section_switcher)
+        menu = Gio.Menu()
+        menu.append("Gỡ cài đặt", "win.section-software")
+        menu.append("Dọn dẹp", "app.cleanup")
+        menu.append("Lịch sử gỡ cài đặt & dọn dẹp", "app.history")
+        menu.append("Làm mới", "win.refresh")
+        menu.append("Giới thiệu", "app.about")
+        self.top_header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
+        # Nút "Đóng góp dự án" (DonateKit); cửa sổ hẹp chỉ hiện trái tim (xem các mốc co giãn).
+        donate = donate_button()
+        self._donate_label = donate.get_child().get_last_child()
+        self.top_header.pack_end(donate)
+
+    def show_section(self, name: str):
+        self.sections.set_visible_child_name(name)
+        if self.section_switcher.get_active_name() != name:
+            self.section_switcher.set_active_name(name)
+        if name == "cleanup" and not self.cleanup_view.scanned and not self.cleanup_view.scanning:
+            self.cleanup_view.scan()
+
+    def _on_cleanup_summary(self, _v, totals):
+        safe, review, failed = totals
+        if failed and not safe and not review:
+            sub = "lỗi khi quét"
+        elif safe:
+            sub = f"{human_size(safe)} an toàn"
+        elif review:
+            sub = f"{human_size(review)} cần xem"
+        else:
+            sub = "gọn gàng"
+        self.section_switcher.set_sub("cleanup", sub)
+
+    def run_cleanup(self, items):
+        from .cleanup_dialog import CleanupRunDialog
+
+        CleanupRunDialog(items, self._on_cleaned).present(self)
 
     # =================== Sidebar ===================
     def _build_sidebar(self):
         tv = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        header.set_title_widget(Adw.WindowTitle(title=APP_NAME, subtitle="Phần mềm đã cài"))
+        header = Adw.HeaderBar(show_end_title_buttons=False, show_start_title_buttons=False)
+        header.set_title_widget(Adw.WindowTitle(title="Nguồn cài đặt", subtitle="phần mềm đã cài"))
         tv.add_top_bar(header)
         self.sidebar_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
         self.sidebar_list.add_css_class("navigation-sidebar")
@@ -106,7 +188,7 @@ class MainWindow(Adw.ApplicationWindow):
     # =================== Nội dung ===================
     def _build_content(self):
         tv = Adw.ToolbarView()
-        header = Adw.HeaderBar()
+        header = Adw.HeaderBar(show_end_title_buttons=False, show_start_title_buttons=False)
 
         self.scope_group = ScopeSwitcher([
             ("apps", "Ứng dụng", "Chỉ hiện ứng dụng có lối tắt menu hoặc do bạn tự cài"),
@@ -120,15 +202,6 @@ class MainWindow(Adw.ApplicationWindow):
         clamp = Adw.Clamp(maximum_size=420, child=self.search)
         header.set_title_widget(clamp)
 
-        menu = Gio.Menu()
-        menu.append("Lịch sử gỡ cài đặt", "app.history")
-        menu.append("Làm mới", "win.refresh")
-        menu.append("Giới thiệu", "app.about")
-        menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu")
-        header.pack_end(menu_btn)
-        # Nút "Đóng góp dự án" (DonateKit) — nhóm bên phải, trước Giới thiệu; cửa sổ hẹp chỉ hiện trái tim.
-        self._donate_compact = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 1000sp"))
-        header.pack_end(donate_button(self._donate_compact))
         self.refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Làm mới (F5)",
                                       action_name="win.refresh")
         header.pack_end(self.refresh_btn)
@@ -168,14 +241,20 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_actions(self):
         refresh = Gio.SimpleAction.new("refresh", None)
-        refresh.connect("activate", lambda *_: self.reload())
+        refresh.connect("activate", lambda *_: self.cleanup_view.scan()
+                        if self.sections.get_visible_child_name() == "cleanup" else self.reload())
         self.add_action(refresh)
         focus = Gio.SimpleAction.new("search", None)
-        focus.connect("activate", lambda *_: self.search.grab_focus())
+        focus.connect("activate", lambda *_: (self.cleanup_view.search if self.sections.get_visible_child_name()
+                                              == "cleanup" else self.search).grab_focus())
         self.add_action(focus)
         app = self.get_application()
         app.set_accels_for_action("win.refresh", ["F5", "<Control>r"])
         app.set_accels_for_action("win.search", ["<Control>f"])
+        sec = Gio.SimpleAction.new("section-software", None)
+        sec.connect("activate", lambda *_: self.show_section("software"))
+        self.add_action(sec)
+        app.set_accels_for_action("win.section-software", ["<Control>1"])
 
     # =================== Dữ liệu ===================
     def reload(self, keep_key: str | None = None):
@@ -237,6 +316,8 @@ class MainWindow(Adw.ApplicationWindow):
         total = sum(i.size or 0 for i in visible)
         protected = sum(1 for i in visible if i.protected_reason)
         label = f"Hiển thị {len(visible)} / {len(items)} mục · tổng {human_size(total)}"
+        apps = sum(1 for i in items if i.visible_as_app)
+        self.section_switcher.set_sub("software", f"{apps} ứng dụng")
         if protected:
             label += f" · {protected} mục được bảo vệ 🔒"
         self.summary.set_label(label)
@@ -286,6 +367,18 @@ class MainWindow(Adw.ApplicationWindow):
             self.toasts.add_toast(make_toast("Đã gỡ xong — đang làm mới danh sách", 4))
         else:
             self.toasts.add_toast(make_toast("Gỡ không thành công: " + result.message, 6))
+        self.reload()
+
+    def open_cleanup(self):
+        self.show_section("cleanup")
+
+    def _on_cleaned(self, result: RemovalResult | None):
+        if result is None:  # danh sách đã cũ, người dùng huỷ ở bước xác nhận
+            self.cleanup_view.scan()
+            return
+        self.toasts.add_toast(make_toast("Đã dọn dẹp xong — đang quét lại" if result.success
+                                         else "Dọn dẹp chưa xong: " + result.message[:160], 5))
+        self.cleanup_view.scan()
         self.reload()
 
     def _on_close_request(self, *_):

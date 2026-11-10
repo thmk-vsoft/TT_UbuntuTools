@@ -109,6 +109,25 @@ CSS = """
 .src-npm        { background: alpha(#c01c28, 0.16); color: mix(#c01c28, @window_fg_color, 0.30); }
 .src-manual     { background: alpha(#77767b, 0.18); color: mix(#77767b, @window_fg_color, 0.40); }
 
+/* Mức an toàn của mục dọn dẹp (luôn kèm chữ — không chỉ dựa vào màu) */
+.lvl-safe         { background: alpha(@success_color, 0.18); color: mix(@success_color, @window_fg_color, 0.35); }
+.lvl-review       { background: alpha(@warning_color, 0.22); color: mix(@warning_color, @window_fg_color, 0.45); }
+.lvl-irreversible { background: alpha(@error_color, 0.18);   color: mix(@error_color, @window_fg_color, 0.30); }
+.lvl-locked       { background: alpha(@window_fg_color, 0.10); color: alpha(@window_fg_color, 0.65); }
+.lvl-edge-safe         { border-left: 4px solid @success_color; }
+.lvl-edge-review       { border-left: 4px solid @warning_color; }
+.lvl-edge-irreversible { border-left: 4px solid @error_color; }
+.lvl-edge-locked       { border-left: 4px solid alpha(@window_fg_color, 0.25); }
+.legend-box { border-radius: 12px; padding: 10px 12px; background: alpha(@card_bg_color, 0.9); }
+.lvl-bar-safe         { background: @success_color; border-radius: 2px; }
+.lvl-bar-review       { background: @warning_color; border-radius: 2px; }
+.lvl-bar-irreversible { background: @error_color; border-radius: 2px; }
+.lvl-bar-locked       { background: alpha(@window_fg_color, 0.25); border-radius: 2px; }
+.safe-box { background: alpha(@success_color, 0.12); border-radius: 12px; padding: 10px 12px; }
+.locked-box { background: alpha(@window_fg_color, 0.08); border-radius: 12px; padding: 10px 12px; }
+.section-tabs > button.section-tab { padding: 4px 18px; min-height: 40px; }
+.section-tabs > button.section-tab:checked { background: alpha(@accent_bg_color, 0.18); }
+
 .summary-bar { padding: 6px 12px; }
 .protected-box {
   background: alpha(@warning_bg_color, 0.18);
@@ -165,6 +184,66 @@ def make_toast(title: str, timeout: int = 4):
     except AttributeError:
         t.set_title(GLib.markup_escape_text(display(title)))
     return t
+
+
+class SectionSwitcher(Gtk.Box):
+    """Hai thẻ lớn ở đầu cửa sổ: '📦 Gỡ cài đặt' / '🧹 Dọn dẹp' — mỗi thẻ có dòng phụ (số mục, dung lượng)."""
+
+    __gsignals__ = {"changed": (GObject.SignalFlags.RUN_FIRST, None, (str,))}
+
+    def __init__(self, sections: list[tuple[str, str, str, str]], active: str):
+        super().__init__(halign=Gtk.Align.CENTER)
+        self.add_css_class("linked")
+        self.add_css_class("section-tabs")
+        self._active = active
+        self._subs: dict[str, Gtk.Label] = {}
+        self._btns: dict[str, Gtk.ToggleButton] = {}
+        first = None
+        for name, icon, label, tip in sections:
+            b = Gtk.ToggleButton(tooltip_text=tip)
+            b.add_css_class("section-tab")
+            box = Gtk.Box(spacing=8)
+            img = Gtk.Image.new_from_icon_name(icon)
+            img.set_pixel_size(20)
+            box.append(img)
+            v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+            t = Gtk.Label(label=label, xalign=0)
+            t.add_css_class("heading")
+            sub = Gtk.Label(xalign=0)
+            sub.add_css_class("caption")
+            sub.add_css_class("dim-label")
+            sub.set_visible(False)
+            v.append(t)
+            v.append(sub)
+            box.append(v)
+            b.set_child(box)
+            if first is None:
+                first = b
+            else:
+                b.set_group(first)
+            b.set_active(name == active)
+            b.connect("toggled", lambda btn, n=name: btn.get_active() and self._set(n))
+            self._subs[name] = sub
+            self._btns[name] = b
+            self.append(b)
+
+    def _set(self, name: str):
+        if name != self._active:
+            self._active = name
+            self.emit("changed", name)
+
+    def set_active_name(self, name: str):
+        if name in self._btns:
+            self._btns[name].set_active(True)
+
+    def get_active_name(self) -> str:
+        return self._active
+
+    def set_sub(self, name: str, text: str):
+        lbl = self._subs.get(name)
+        if lbl is not None:
+            lbl.set_label(text)
+            lbl.set_visible(bool(text))
 
 
 class ScopeSwitcher(Gtk.Box):

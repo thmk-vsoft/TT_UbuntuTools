@@ -42,13 +42,14 @@ if not _ERR:
             self.window = None
             self.busy = 0  # số thao tác gỡ đang chạy
             self._inhibit_cookie = 0
-            for name, cb in (("about", self._on_about), ("history", self._on_history),
+            for name, cb in (("about", self._on_about), ("history", self._on_history), ("cleanup", self._on_cleanup),
                              ("donate", self._on_donate), ("quit", self._on_quit)):
                 act = Gio.SimpleAction.new(name, None)
                 act.connect("activate", cb)
                 self.add_action(act)
             self.set_accels_for_action("app.quit", ["<Control>q"])
             self.set_accels_for_action("app.history", ["<Control>h"])
+            self.set_accels_for_action("app.cleanup", ["<Control>k"])
 
         def do_startup(self):
             Adw.Application.do_startup(self)
@@ -81,7 +82,7 @@ if not _ERR:
                 try:
                     self._inhibit_cookie = self.inhibit(
                         self.window, Gtk.ApplicationInhibitFlags.LOGOUT | Gtk.ApplicationInhibitFlags.SUSPEND,
-                        "Đang gỡ cài đặt phần mềm")
+                        "Đang gỡ cài đặt / dọn dẹp")
                 except Exception:
                     self._inhibit_cookie = 0
 
@@ -96,7 +97,7 @@ if not _ERR:
                 if self.window:
                     from .ui.common import make_toast
 
-                    self.window.toasts.add_toast(make_toast("Đang gỡ cài đặt — chưa thể thoát.", 4))
+                    self.window.toasts.add_toast(make_toast("Đang gỡ cài đặt / dọn dẹp — chưa thể thoát.", 4))
                 return
             self.quit()
 
@@ -109,6 +110,10 @@ if not _ERR:
             from .ui.donate import DonateDialog
 
             DonateDialog().present(self.window)
+
+        def _on_cleanup(self, *_):
+            if self.window is not None:
+                self.window.open_cleanup()
 
         def _on_history(self, *_):
             from .ui.history_dialog import HistoryDialog

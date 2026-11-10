@@ -95,9 +95,18 @@ class DetailsPane(Gtk.Stack):
         self.props_list.remove_all()
         self._row("Phương thức cài", item.source.label)
         self._row("Phiên bản", item.version)
-        self._row("Dung lượng", human_size(item.size) if item.size is not None
-                  else "Không rõ (không đọc được hoặc quá lớn để đếm nhanh)" if item.source == Source.MANUAL
-                  else "—")
+        home_state = item.extra.get("home_state", "") if item.extra.get("kind") == "home" else ""
+        if item.size is not None:
+            size_txt = human_size(item.size)
+        elif home_state == "broken":
+            size_txt = "— (chương trình không còn trên máy)"
+        elif home_state in ("unmanaged", "ambiguous"):
+            size_txt = "— (không tính: không phải thư mục cài phần mềm)"
+        elif item.source == Source.MANUAL:
+            size_txt = "Không rõ (không đọc được hoặc quá lớn để đếm nhanh)"
+        else:
+            size_txt = "—"
+        self._row("Dung lượng", size_txt)
         date_txt = item.install_date.strftime("%d/%m/%Y %H:%M") if item.install_date else ""
         if item.source in (Source.APT, Source.THIRD_PARTY, Source.DEB) and item.install_date \
                 and not item.extra.get("date_from_log"):

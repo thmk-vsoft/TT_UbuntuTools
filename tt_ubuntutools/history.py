@@ -25,6 +25,39 @@ def _clean(v):
     return v
 
 
+def make_cleanup_record(cplan, result: RemovalResult, freed: int, skipped=(), when: dt.datetime | None = None,
+                        done_ids: list[str] | None = None) -> dict:
+    """Bản ghi lịch sử cho một lần dọn dẹp (cplan: cleanup.plan.CleanupPlan); done_ids = id các mục THẬT SỰ đã dọn."""
+    items = list(getattr(cplan, "items", []) or [])
+    if done_ids is not None:
+        ids = set(done_ids)
+        items = [i for i in items if i.id in ids]
+    rec = {
+        "time": (when or dt.datetime.now()).isoformat(timespec="seconds"),
+        "name": f"Dọn dẹp {len(items)} mục",
+        "id": "cleanup",
+        "source": "cleanup",
+        "source_label": "Dọn dẹp",
+        "version": "",
+        "purge": False,
+        "autoremove": False,
+        "option_labels": sorted({f"{i.level_label}" for i in items}),
+        "kept": [],
+        "affected": [f"{i.title} [{i.level_label}]" for i in items],
+        "freed_bytes": int(freed or 0),
+        "trashed_bytes": 0,
+        "partial": result.partial,
+        "completed": [f"{len(result.completed)} bước / đường dẫn"],
+        "skipped": [f"{p} ({why})" for p, why in list(skipped)[:20]],
+        "success": result.success,
+        "verified": None,
+        "exit_code": result.exit_code,
+        "message": result.message,
+        "log_tail": "\n".join(result.log.splitlines()[-LOG_TAIL_LINES:])[-16384:],
+    }
+    return {k: _clean(v) for k, v in rec.items()}
+
+
 def make_record(plan: RemovalPlan, result: RemovalResult, when: dt.datetime | None = None) -> dict:
     item = plan.item
     rec = {
@@ -36,6 +69,9 @@ def make_record(plan: RemovalPlan, result: RemovalResult, when: dt.datetime | No
         "version": item.version,
         "purge": plan.options.purge,
         "autoremove": plan.options.autoremove,
+        "option_labels": ([plan.purge_label] if plan.options.purge and plan.supports_purge else [])
+                         + ([plan.autoremove_label] if plan.options.autoremove and plan.supports_autoremove else []),
+        "kept": list(plan.kept_paths),
         "affected": [a.name for a in plan.affected],
         "freed_bytes": (plan.freed_bytes or 0) if result.success else 0,
         "trashed_bytes": (plan.trashed_bytes or 0) if result.success else 0,

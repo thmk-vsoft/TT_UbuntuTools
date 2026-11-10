@@ -241,7 +241,205 @@ def _plan_appimage(plan: RemovalPlan, item: SoftwareItem, opts: RemovalOptions):
                              "phóng khi bạn dọn Thùng rác.")
 
 
+def running_pids(paths: list[str]) -> list[str]:
+    """PID của tiến trình (của người dùng hiện tại) đang chạy từ / làm việc trong các đường dẫn này."""
+    paths = [p.rstrip("/") for p in paths if p]
+    uid = os.getuid()
+    out = []
+
+    def inside(t: str) -> bool:
+        return any(t == p or t.startswith(p + "/") for p in paths)
+
+    try:
+        pids = [d for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        return []
+    for pid in pids:
+        if pid == str(os.getpid()):
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != uid:
+                continue
+            targets = []
+            for link in ("exe", "cwd"):
+                try:
+                    targets.append(os.readlink(f"/proc/{pid}/{link}"))
+                except OSError:
+                    pass
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                argv0 = fh.read(4096).split(b"\0", 1)[0].decode("utf-8", "replace")
+            targets.append(argv0)
+        except OSError:
+            continue
+        if any(t and inside(t) for t in targets):
+            out.append(pid)
+    return out
+
+
+def _home_path_ok(path: str, state: str, root: str, home: str | None = None, target: str = "") -> str:
+    """'' nếu được chuyển `path` vào Thùng rác; nếu không, trả về lý do. Kiểm tra lại từ đầu (không tin collector)."""
+    from ..collectors import home_apps as ha
+
+    home = os.path.realpath(home or HOME)
+    norm = os.path.normpath(path)
+    rel = ha._rel(norm, home)
+    if norm != path or rel is None:
+        return f"{path} nằm ngoài thư mục nhà"
+    if os.path.realpath(os.path.dirname(norm)) != os.path.dirname(norm):
+        return f"{path} nằm trong thư mục là liên kết tượng trưng"
+    parent = os.path.dirname(rel)
+    if norm == root:
+        if state == "ok":
+            if not ha.is_install_root(norm, home):
+                return f"{path} không còn là thư mục chương trình hợp lệ"
+            proj = ha.looks_like_project(norm, target)
+            if proj:
+                return f"{path}: {proj} — có thể là dự án mã nguồn / dữ liệu của bạn"
+            return ""
+        if state == "standalone":
+            return "" if ha.in_bin_dir(norm, home) or ha.is_install_root(norm, home) else \
+                f"{path} không nằm trong ~/.local/bin hoặc ~/bin"
+        return f"{path}: trạng thái {state} không được gỡ"
+    if parent in ha.shortcut_dirs(home):
+        return "" if norm.endswith(".desktop") else f"{path} không phải file lối tắt .desktop"
+    if os.path.dirname(norm) in ha.bin_dirs(home):
+        return ""
+    if ha.icon_path_ok(norm, home):
+        return ""
+    return f"{path} không thuộc loại file công cụ được phép gỡ"
+
+
+_HOME_KIND_LABEL = {"root_dir": "thư mục chương trình", "root_file": "file chương trình", "bin": "lệnh / script đi kèm",
+                    "shortcut_menu": "lối tắt menu", "shortcut_desktop": "lối tắt ngoài màn hình",
+                    "autostart": "tự chạy khi đăng nhập", "icon": "biểu tượng"}
+
+
+def _home_label(path: str, root: str) -> str:
+    from ..collectors import home_apps as ha
+
+    home = os.path.realpath(HOME)
+    if path == root:
+        return _HOME_KIND_LABEL["root_dir" if os.path.isdir(path) and not os.path.islink(path) else "root_file"]
+    parent = os.path.dirname(ha._rel(path, home) or "")
+    if os.path.dirname(path) in ha.bin_dirs(home):
+        return _HOME_KIND_LABEL["bin"]
+    if parent == ".local/share/applications":
+        return _HOME_KIND_LABEL["shortcut_menu"]
+    if parent == ".config/autostart":
+        return _HOME_KIND_LABEL["autostart"]
+    if parent in ha.desktop_dirs(home):
+        return _HOME_KIND_LABEL["shortcut_desktop"]
+    return _HOME_KIND_LABEL["icon"]
+
+
+def _folder_preview(root: str, limit: int = 12) -> str:
+    try:
+        names = sorted(os.listdir(root), key=str.lower)
+    except OSError:
+        return "(không đọc được nội dung)"
+    shown = [n + ("/" if os.path.isdir(os.path.join(root, n)) and not os.path.islink(os.path.join(root, n)) else "")
+             for n in names[:limit]]
+    more = f" … (tổng {len(names)} mục)" if len(names) > limit else ""
+    return ", ".join(shown) + more if shown else "(trống)"
+
+
+def _under_path(path: str, root: str) -> bool:
+    return bool(root) and (path == root or path.startswith(root.rstrip("/") + "/"))
+
+
+def _plan_home(plan: RemovalPlan, item: SoftwareItem, opts: RemovalOptions):
+    """Phần mềm tự cài trong thư mục nhà: chỉ chuyển vào Thùng rác, không cần quyền quản trị.
+
+    Lối tắt, script khởi chạy, icon (chắc chắn thuộc chương trình) được gỡ ngay. THƯ MỤC chương trình chỉ được
+    chuyển vào Thùng rác khi người dùng tự bật tuỳ chọn (plan.purge), sau khi xem danh sách nội dung của nó —
+    không bộ luật tự động nào chắc chắn 100% một thư mục chỉ chứa chương trình."""
+    from ..models import human_size
+    from ..utils import mount_points, mounts_under
+
+    home = os.path.realpath(HOME)
+    state = item.extra.get("home_state", "")
+    if state not in ("ok", "standalone", "broken"):
+        return  # unmanaged / ambiguous: protected_reason đã chặn
+    root = item.extra.get("root", "") if state != "broken" else ""
+    if root and not os.path.lexists(root):
+        plan.error = f"{root} không còn trên máy (có thể đã bị gỡ). Hãy làm mới danh sách."
+        return
+    folder = root if state == "ok" and os.path.isdir(root) and not os.path.islink(root) else ""
+    include_folder = bool(folder) and opts.purge
+    if folder:
+        plan.supports_purge = True
+        size = human_size(item.size) if item.size is not None else "không rõ dung lượng"
+        plan.purge_label = f"Chuyển cả thư mục chương trình vào Thùng rác ({size})"
+    if include_folder:
+        try:
+            st = os.stat(folder)
+        except OSError as exc:
+            plan.error = f"Không đọc được {folder}: {exc.strerror}"
+            return
+        if st.st_uid != os.getuid() or not os.access(folder, os.W_OK | os.X_OK):
+            plan.blocked_reasons.append(
+                f"{folder} thuộc người dùng khác hoặc chỉ đọc (có thể đã từng chạy bằng sudo) — không chuyển vào "
+                f"Thùng rác được. Hãy sửa quyền (vd. sudo chown -R $USER: '{folder}') rồi thử lại.")
+            return
+        units = systemd_units_using(folder, unit_dirs=[os.path.join(home, ".config/systemd/user"),
+                                                       os.path.join(home, ".local/share/systemd/user")])
+        if units:
+            plan.blocked_reasons.append(f"{folder} đang được dịch vụ systemd của bạn dùng ({', '.join(units[:4])}). "
+                                        "Hãy dừng / gỡ dịch vụ đó trước.")
+            return
+    points = mount_points()
+    trash = []
+    extra_links = item.extra.get("folder_links", []) if include_folder else []
+    for p in list(item.extra.get("trash_paths", [])) + extra_links:
+        if folder and p == folder and not include_folder:
+            continue
+        if p in extra_links and (not os.path.islink(p) or not _under_path(os.path.realpath(p), folder)):
+            continue  # liên kết đã đổi đích: để nguyên
+        if not os.path.lexists(p):
+            continue  # đã biến mất từ lúc quét
+        why = _home_path_ok(p, state, root, home, item.extra.get("target", ""))
+        if why:
+            plan.error = "Không thể gỡ an toàn: " + why + ". Hãy làm mới danh sách."
+            return
+        if os.path.isdir(p) and not os.path.islink(p) and mounts_under(p, points):
+            plan.blocked_reasons.append(f"{p} có ổ đĩa / ổ mạng gắn bên trong — không xoá.")
+            return
+        if not os.access(os.path.dirname(p), os.W_OK):
+            plan.error = f"Không có quyền ghi vào {os.path.dirname(p)}."
+            return
+        trash.append(p)
+    if folder and include_folder:
+        plan.warnings.append(f"Thư mục {folder} sẽ vào Thùng rác cùng MỌI THỨ bên trong: {_folder_preview(folder)}. "
+                             "Hãy chắc chắn trong đó không có file của bạn (dự án, dữ liệu, bản lưu game...).")
+    elif folder:
+        plan.kept_paths.append(folder)
+        plan.warnings.append(f"Thư mục chương trình {folder} được GIỮ LẠI. Bật «Chuyển cả thư mục chương trình vào "
+                             f"Thùng rác» ở mục Tuỳ chọn nếu muốn gỡ cả nó — nội dung: {_folder_preview(folder)}.")
+    if not trash:
+        if folder and not include_folder:
+            plan.blocked_reasons.append("Chỉ còn thư mục chương trình — bật «Chuyển cả thư mục chương trình vào "
+                                        "Thùng rác» ở mục Tuỳ chọn để gỡ nó.")
+        else:
+            plan.error = "Không còn gì để gỡ (có thể đã bị gỡ). Hãy làm mới danh sách."
+        return
+    for p in trash:
+        plan.affected.append(AffectedEntry(p, _home_label(p, root), item.size if p == root else None))
+    main = root if (root and root in trash) else ""
+    _finalize_file_plan(plan, [], trash, item.size if main else None, main)
+    pids = running_pids([root] + item.extra.get("launchers", [])) if root else []
+    if pids:
+        plan.warnings.append(f"Chương trình đang chạy (PID {', '.join(pids[:6])}) — hãy đóng nó trước khi gỡ.")
+    plan.warnings.append("Mọi mục được chuyển vào Thùng rác (có thể khôi phục). Dung lượng chỉ được giải phóng khi "
+                         "bạn dọn Thùng rác.")
+    if state != "broken":
+        plan.warnings.append("Dữ liệu và cấu hình của chương trình ở ~/.config, ~/.local/share, thư mục Tải về... "
+                             + ("(ngoài thư mục chương trình ở trên) " if include_folder else "") + "KHÔNG bị xoá.")
+
+
 def _plan_manual(plan: RemovalPlan, item: SoftwareItem, opts: RemovalOptions):
+    if item.extra.get("kind") == "home":
+        _plan_home(plan, item, opts)
+        return
     path = item.path
     units = systemd_units_using(path)
     if units:

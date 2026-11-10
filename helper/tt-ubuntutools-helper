@@ -8,6 +8,9 @@ Hành động (nhiều hành động trong một lần xác thực được ngă
   rm-path      <đường_dẫn>
   pip-remove   <tên> --site /usr/local/lib/python3.N/dist-packages
   npm-remove   <tên> --prefix <thư_mục_npm_toàn_cục>
+  apt-clean                                   (dọn gói .deb apt đã tải — apt-get clean)
+  journal-vacuum --size <N>M|G                (thu gọn nhật ký systemd, 50M..2G)
+  snap-remove-revision <snap> --revision <số> (gỡ MỘT bản snap cũ đang 'disabled')
 
 Nguyên tắc an toàn:
   * Kiểm tra cú pháp TẤT CẢ hành động trước, rồi kiểm tra an toàn (mô phỏng apt, luật bảo vệ,
@@ -57,6 +60,8 @@ ENV = {
 }
 LOG_DIR = "/var/log/tt-ubuntutools"
 APT_GET, DPKG_QUERY, SNAP = "/usr/bin/apt-get", "/usr/bin/dpkg-query", "/usr/bin/snap"
+JOURNALCTL = "/usr/bin/journalctl"
+JOURNAL_SIZE = re.compile(r"([1-9][0-9]{0,4})([MG])")
 DPKG_FRONTEND_LOCK = "/var/lib/dpkg/lock-frontend"
 LOCK_HELD = False  # FrontendLock đang giữ khoá frontend của dpkg
 
@@ -232,6 +237,27 @@ def build(argv):
                 prefix == "/" or prefix.startswith(("/home/", "/root", "/tmp", "/var/tmp")):
             raise UsageError("--prefix không hợp lệ.")
         return {"action": action, "name": args[0], "prefix": prefix}
+    if action == "apt-clean":
+        if args:
+            raise UsageError("apt-clean không nhận tham số.")
+        return {"action": action}
+    if action == "journal-vacuum":
+        o = _parse_opts(args, valued=("--size",))
+        m = JOURNAL_SIZE.fullmatch(o.get("--size", ""))
+        if not m:
+            raise UsageError("--size phải có dạng 100M hoặc 1G.")
+        mb = int(m.group(1)) * (1024 if m.group(2) == "G" else 1)
+        if not 50 <= mb <= 2048:
+            raise UsageError("--size phải trong khoảng 50M..2G.")
+        return {"action": action, "size": o["--size"]}
+    if action == "snap-remove-revision":
+        if not args or not SNAP_NAME.fullmatch(args[0]):
+            raise UsageError("Tên snap không hợp lệ.")
+        o = _parse_opts(args[1:], valued=("--revision",))
+        rev = o.get("--revision", "")
+        if not re.fullmatch(r"[1-9][0-9]{0,9}", rev):
+            raise UsageError("--revision phải là số bản (vd. 1643).")
+        return {"action": action, "name": args[0], "revision": rev}
     raise UsageError(f"Hành động không được hỗ trợ: {action!r}")
 
 
@@ -462,8 +488,48 @@ def _root_owned_chain(path):
         p = os.path.dirname(p)
 
 
+def check_apt_clean(job):
+    if not os.path.isfile(APT_GET):
+        raise SafetyError("Không tìm thấy apt-get.")
+
+
+def check_journal(job):
+    if not os.path.isfile(JOURNALCTL):
+        raise SafetyError("Không tìm thấy journalctl.")
+
+
+def snap_disabled_revisions(name):
+    """Các bản 'disabled' (không phải bản đang dùng) của một snap, đọc trực tiếp từ snapd lúc này."""
+    res = capture([SNAP, "list", "--all", name], 60)
+    if res.returncode != 0:
+        raise SafetyError(f"Không đọc được danh sách bản của snap {name}.")
+    revs, all_revs = set(), set()
+    for line in res.stdout.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == name and parts[2].isdigit():
+            all_revs.add(parts[2])
+            if "disabled" in parts[-1].split(","):
+                revs.add(parts[2])
+    # Bản ĐANG DÙNG (snap list không --all). Snap bị `snap disable` thì bản đang dùng cũng ghi 'disabled'.
+    cur = capture([SNAP, "list", name], 60)
+    current = {line.split()[2] for line in cur.stdout.splitlines()[1:]
+               if len(line.split()) >= 3 and line.split()[0] == name and line.split()[2].isdigit()}
+    if cur.returncode != 0 or len(current) != 1:
+        raise SafetyError(f"Không xác định được bản đang dùng của snap {name}.")
+    if len(all_revs) < 2:
+        raise SafetyError(f"Snap {name} chỉ có một bản — không gỡ.")
+    return revs - current
+
+
+def check_snap_revision(job):
+    if job["revision"] not in snap_disabled_revisions(job["name"]):
+        raise SafetyError(f"Bản {job['revision']} của snap {job['name']} không phải bản cũ đang tắt (disabled) — "
+                          "không gỡ bản đang dùng.")
+
+
 CHECKS = {"apt-remove": check_apt, "snap-remove": check_snap, "rm-path": check_rm,
-          "pip-remove": check_pip, "npm-remove": check_npm}
+          "pip-remove": check_pip, "npm-remove": check_npm, "apt-clean": check_apt_clean,
+          "journal-vacuum": check_journal, "snap-remove-revision": check_snap_revision}
 
 
 # ------------------------------------------------------------------ thực thi
@@ -543,10 +609,21 @@ def run_job(job):
             OUT.line("LỖI: npm báo xong nhưng gói vẫn còn.")
             return False, "npm: gói vẫn còn"
         return code == 0, f"npm mã {code}"
+    if a == "apt-clean":
+        code = relay([APT_GET, "clean"])
+        return code == 0, f"apt-get clean mã {code}"
+    if a == "journal-vacuum":
+        code = relay([JOURNALCTL, f"--vacuum-size={job['size']}"])
+        return code == 0, f"journalctl mã {code}"
+    if a == "snap-remove-revision":
+        code = relay([SNAP, "remove", job["name"], "--revision", job["revision"]])
+        return code == 0, f"snap mã {code}"
     return False, "hành động lạ"
 
 
 def _describe(job):
+    if job["action"] == "snap-remove-revision":
+        return f"snap {job['name']} bản {job['revision']}"
     return job.get("path") or f"{job['action']} {job.get('name', '')}".strip()
 
 

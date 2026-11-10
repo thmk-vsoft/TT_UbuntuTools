@@ -23,8 +23,16 @@ def step_argv(step: Step) -> list[str]:
 
 class RemovalRunner:
     def __init__(self, plan: RemovalPlan, on_line: Callable[[str], None],
-                 on_done: Callable[[RemovalResult], None]):
+                 on_done: Callable[[RemovalResult], None], success_message: str = "Gỡ cài đặt thành công.",
+                 keep_going: bool = False):
         self.plan = plan
+        self.success_message = success_message
+        # Dọn dẹp: các mục độc lập nhau — một mục lỗi không được chặn các mục sau (gỡ phần mềm thì vẫn dừng ngay).
+        self.keep_going = keep_going
+        self.errors: list[tuple[str, str]] = []   # (bước, lỗi) khi keep_going
+        self.error_tags: list[str] = []           # id mục dọn dẹp có bước lỗi
+        self.done_tags: list[str] = []            # id mục dọn dẹp có bước đã chạy xong
+        self.skipped: list[tuple[str, str]] = []   # (đường dẫn, lý do) bước 'delete' bỏ qua khi kiểm tra lại
         self.on_line = on_line
         self.on_done = on_done
         self._log: list[str] = []
@@ -49,9 +57,10 @@ class RemovalRunner:
             if s.root and out and out[-1].root:
                 prev = out[-1]
                 out[-1] = Step("cmd", prev.argv + ["::"] + s.argv, root=True,
-                               label=f"{prev.label}; {s.label}")
+                               label=prev.label if s.label == prev.label else f"{prev.label}; {s.label}",
+                               tag=";".join(t for t in (prev.tag, s.tag) if t))
             else:
-                out.append(Step(s.kind, list(s.argv), s.root, s.label, s.env))
+                out.append(Step(s.kind, list(s.argv), s.root, s.label, s.env, s.check, s.tag))
         return out
 
     # ---- công khai -------------------------------------------------------
@@ -73,6 +82,7 @@ class RemovalRunner:
         self.on_line(line)
 
     def _step_done(self, step: Step):
+        self.done_tags.extend(t for t in step.tag.split(";") if t)
         if step.kind == "trash":
             self._completed.extend(step.argv)
         else:
@@ -80,21 +90,21 @@ class RemovalRunner:
 
     def _next(self, idx: int):
         if idx >= len(self._steps):
-            self._finish(True, 0, "Gỡ cài đặt thành công.")
+            if self.errors:
+                head = "Xong một phần" if self._completed else "Không dọn được mục nào"
+                self._finish(False, 1, f"{head} — {len(self.errors)} bước lỗi: "
+                             + "; ".join(f"{s}: {e}" for s, e in self.errors[:4]))
+                return
+            self._finish(True, 0, self.success_message)
             return
         step = self._steps[idx]
         self._emit(f"▶ Bước {idx + 1}/{len(self._steps)}: {step.label or step.display()}")
         if step.kind == "trash":
-            for p in step.argv:
-                try:
-                    Gio.File.new_for_path(p).trash(None)
-                    self._emit(f"  Đã chuyển vào Thùng rác: {p}")
-                    self._completed.append(p)
-                except GLib.Error as exc:
-                    self._emit(f"  LỖI khi chuyển {p} vào Thùng rác: {exc.message}")
-                    self._finish(False, 1, f"Không chuyển được {display(p)} vào Thùng rác.")
-                    return
-            GLib.idle_add(lambda: (self._next(idx + 1), False)[1])
+            # Bất đồng bộ: thư mục lớn (IDE, SDK hàng GB) không làm đứng giao diện.
+            self._trash_next(idx, list(step.argv))
+            return
+        if step.kind == "delete":
+            self._delete_step(idx, step)
             return
         try:
             argv = step_argv(step)
@@ -132,6 +142,69 @@ class RemovalRunner:
         self._buf = b""
         self._last_output = time.monotonic()
         self._read_next(idx, step)
+
+    def _delete_step(self, idx: int, step: Step):
+        """Xoá vĩnh viễn trong luồng phụ (node_modules có thể hàng trăm nghìn file). Mỗi đường dẫn được KIỂM TRA LẠI
+        bằng bộ nhận diện của loại ngay trước khi xoá; không đạt thì bỏ qua (không bao giờ xoá 'cho chắc')."""
+        import threading
+
+        from ..cleanup.scanners import recheck
+        from .pathrules import PathRuleError, safe_remove
+
+        def emit(text):
+            GLib.idle_add(lambda: (self._emit(text), False)[1])
+
+        def work():
+            errors = []
+            for p in step.argv:
+                why = recheck(step.check, p)
+                if why:
+                    emit(f"  Bỏ qua {p}: {why}")
+                    GLib.idle_add(lambda p=p, why=why: (self.skipped.append((p, why)), False)[1])
+                    continue
+                try:
+                    n = safe_remove(p)
+                except (OSError, PathRuleError) as exc:
+                    msg = getattr(exc, "strerror", None) or str(exc)
+                    emit(f"  LỖI khi xoá {p}: {msg}")
+                    errors.append(p)
+                    continue
+                emit(f"  Đã xoá {p} ({n} mục)")
+                GLib.idle_add(lambda p=p: (self._completed.append(p), False)[1])
+            GLib.idle_add(lambda: (done(errors), False)[1])
+
+        def done(errors):
+            if errors:
+                if self.keep_going:
+                    self.errors.append((step.label or "xoá", f"không xoá được {len(errors)} đường dẫn"))
+                    self.error_tags.extend(t for t in step.tag.split(";") if t)
+                    self._next(idx + 1)
+                    return
+                self._finish(False, 1, f"Không xoá được {len(errors)} mục (xem nhật ký).")
+                return
+            self._next(idx + 1)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _trash_next(self, idx: int, remaining: list[str]):
+        if not remaining:
+            self._next(idx + 1)
+            return
+        p = remaining[0]
+        gfile = Gio.File.new_for_path(p)
+
+        def done(src, res, _data=None):
+            try:
+                src.trash_finish(res)
+            except GLib.Error as exc:
+                self._emit(f"  LỖI khi chuyển {p} vào Thùng rác: {exc.message}")
+                self._finish(False, 1, f"Không chuyển được {display(p)} vào Thùng rác: {exc.message}")
+                return
+            self._emit(f"  Đã chuyển vào Thùng rác: {p}")
+            self._completed.append(p)
+            self._trash_next(idx, remaining[1:])
+
+        gfile.trash_async(GLib.PRIORITY_DEFAULT, None, done, None)
 
     def _lock_watch(self):
         if self._proc is None:
@@ -214,6 +287,13 @@ class RemovalRunner:
         if code != 0:
             if step.root and self._jobs_done:
                 self._completed.extend(self._jobs_done)  # các hành động helper đã làm xong trước khi lỗi
+            if self.keep_going:
+                msg = self._failure_message(step, code)
+                self.errors.append((step.label or "lệnh", msg))
+                self.error_tags.extend(t for t in step.tag.split(";") if t)
+                self._emit(f"✘ {step.label}: {msg} — tiếp tục các mục khác.")
+                self._next(idx + 1)
+                return
             self._finish(False, code, self._failure_message(step, code))
             return
         self._step_done(step)
@@ -246,7 +326,7 @@ class RemovalRunner:
     def _finish(self, ok: bool, code: int, message: str):
         self.running = False
         partial = (not ok) and bool(self._completed)
-        if partial:
+        if partial and not self.keep_going:
             message += " Một phần đã được thực hiện trước đó: " + ", ".join(self._completed)
         self._emit(("✔ " if ok else "✘ ") + message)
         removed = [a.name for a in self.plan.affected] if ok else list(self._completed)

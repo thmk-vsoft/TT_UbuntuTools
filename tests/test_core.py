@@ -5,6 +5,7 @@ import gzip
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -492,6 +493,865 @@ class PathRulesTest(unittest.TestCase):
             self.skipTest("cần dpkg")
         self.assertIsNone(pathrules.dpkg_owner_strict("/opt/__tt_khong_ton_tai__"))
         self.assertTrue(pathrules.dpkg_owner_strict("/usr/bin/dpkg-query"))
+
+
+class HomeAppsTest(unittest.TestCase):
+    """Phần mềm tự cài trong thư mục nhà — dựng một thư mục nhà giả mô phỏng các kiểu cài thực tế."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        h = self.home
+        for d in (".local/share/applications", ".local/bin", "Desktop", ".config/autostart",
+                  ".local/share/icons/hicolor/scalable/apps", "Programs", "MyCode/proj"):
+            os.makedirs(os.path.join(h, d))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def w(self, rel, text="", mode=0o644, data=None):
+        path = os.path.join(self.home, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data if data is not None else text.encode())
+        os.chmod(path, mode)
+        return path
+
+    def desk(self, rel, name, exec_, icon=""):
+        return self.w(rel, f"[Desktop Entry]\nType=Application\nName={name}\nExec={exec_}\nIcon={icon}\n")
+
+    def apps(self, **kw):
+        from tt_ubuntutools.collectors.home_apps import find_home_apps
+        return {a.key: a for a in find_home_apps(home=self.home, **kw)}
+
+    def test_gomgo_style_script_and_venv(self):
+        h = self.home
+        app = os.path.join(h, ".local/share/multi-downloader-app")
+        os.makedirs(os.path.join(app, ".venv/bin"))
+        os.symlink("/usr/bin/python3", os.path.join(app, ".venv/bin/python"))  # đúng như venv thật
+        self.w(".local/share/multi-downloader-app/multidownloader/__init__.py")
+        self.w(".local/share/multi-downloader/library.sqlite3")  # dữ liệu người dùng — KHÔNG được gỡ
+        launcher = self.w(".local/bin/multi-downloader",
+                          f"#!/bin/sh\ncd {app}\nexec {app}/.venv/bin/python -m multidownloader \"$@\"\n", 0o755)
+        d1 = self.desk(".local/share/applications/gomgo.desktop", "GomGo", f'"{launcher}"', "gomgo")
+        d2 = self.desk("Desktop/gomgo.desktop", "GomGo", f'"{launcher}"', "gomgo")
+        icon = self.w(".local/share/icons/hicolor/scalable/apps/gomgo.svg", "<svg/>")
+        a = self.apps()["root:" + app]
+        self.assertEqual(a.state, "ok")
+        self.assertEqual(sorted(a.trash_paths()), sorted([app, launcher, d1, d2, icon]))
+        self.assertNotIn(os.path.join(h, ".local/share/multi-downloader"), a.trash_paths())
+        # icon còn được lối tắt hệ thống khác dùng -> giữ lại
+        a = self.apps(other_icons={"gomgo"})["root:" + app]
+        self.assertNotIn(icon, a.trash_paths())
+
+    def test_programs_dir_and_bin_symlink(self):
+        h = self.home
+        exe = self.w("Programs/Telegram/Telegram", data=b"\x7fELF" + b"\0" * 20, mode=0o755)
+        os.symlink(exe, os.path.join(h, ".local/bin/telegram"))
+        self.desk("Desktop/Telegram.desktop", "Telegram", exe + " -- %U")
+        a = self.apps()["root:" + os.path.join(h, "Programs/Telegram")]
+        self.assertEqual(a.state, "ok")
+        self.assertIn(os.path.join(h, ".local/bin/telegram"), a.launchers)
+
+    def test_own_project_is_never_removable(self):
+        h = self.home
+        script = self.w("MyCode/proj/run.sh", "#!/bin/sh\necho hi\n", 0o755)
+        self.desk(".local/share/applications/proj.desktop", "Proj", script)
+        apps = self.apps()
+        self.assertEqual([a.state for a in apps.values()], ["unmanaged"])
+        self.assertIn("không tự gỡ", list(apps.values())[0].reason)
+
+    def test_ambiguous_and_shared_roots(self):
+        h = self.home
+        self.w("Programs/A/run", "#!/bin/sh\n", 0o755)
+        self.w("Programs/B/run", "#!/bin/sh\n", 0o755)
+        l = self.w(".local/bin/two", f"#!/bin/sh\n{h}/Programs/A/run && {h}/Programs/B/run\n", 0o755)
+        self.desk(".local/share/applications/two.desktop", "Two", l)
+        x = self.w(".local/share/Suite/x", data=b"\x7fELF", mode=0o755)
+        y = self.w(".local/share/Suite/y", data=b"\x7fELF", mode=0o755)
+        self.desk(".local/share/applications/x.desktop", "X", x)
+        self.desk(".local/share/applications/y.desktop", "Y", y)
+        # Cùng một sản phẩm trong ~/Programs (vd. bin/studio và bin/studio.sh) vẫn gỡ được.
+        s1 = self.w("Programs/studio/bin/studio", data=b"\x7fELF", mode=0o755)
+        s2 = self.w("Programs/studio/bin/studio.sh", "#!/bin/sh\n", mode=0o755)
+        self.desk(".local/share/applications/s1.desktop", "Studio", s1)
+        self.desk("Desktop/s2.desktop", "Studio", s2)
+        states = {k: a.state for k, a in self.apps().items()}
+        self.assertIn(states.get("unmanaged:" + l), ("unmanaged", "ambiguous"))  # script chạy 2 chương trình
+        self.assertEqual(states["root:" + os.path.join(h, ".local/share/Suite")], "ambiguous")
+        self.assertEqual(states["root:" + os.path.join(h, "Programs/studio")], "ok")
+
+    def test_mentioned_data_dirs_are_never_program_folders(self):
+        h = self.home
+        self.w(".local/share/TelegramDesktop/tdata/key_datas", "secret")
+        self.w(".local/share/backups/old.tar", "x")
+        tg = self.w(".local/bin/tg-work",
+                    "#!/bin/sh\nexec /usr/bin/telegram-desktop -workdir $HOME/.local/share/TelegramDesktop \"$@\"\n", 0o755)
+        bk = self.w(".local/bin/backup", "#!/bin/sh\nrsync -a ~/Documents/ ~/.local/share/backups\n", 0o755)
+        self.desk(".local/share/applications/tg.desktop", "TG work", tg)
+        self.desk(".local/share/applications/bk.desktop", "Backup", bk)
+        self.w(".local/share/Deep/a/b/c/d/run", data=b"\x7fELF", mode=0o755)
+        self.desk(".local/share/applications/deep.desktop", "Deep", os.path.join(h, ".local/share/Deep/a/b/c/d/run"))
+        apps = self.apps()
+        self.assertFalse([a for a in apps.values() if a.state in ("ok", "standalone")], apps)
+        for a in apps.values():
+            for p in a.trash_paths():
+                self.assertNotIn("TelegramDesktop", p)
+                self.assertNotIn("backups", p)
+
+    def test_projects_and_runtimes(self):
+        h = self.home
+        self.w("Programs/proj/.git/HEAD", "ref")
+        run = self.w("Programs/proj/run.sh", "#!/bin/sh\n", 0o755)
+        self.desk(".local/share/applications/proj.desktop", "Proj", run)
+        node = self.w("Programs/node/bin/node", data=b"\x7fELF", mode=0o755)
+        app_js = self.w("MyCode/web/app.js", "console.log(1)")
+        self.desk(".local/share/applications/web.desktop", "Web", f"{node} {app_js}")
+        self.desk(".local/share/applications/node.desktop", "Node", node)
+        # Lối tắt chính thức của Telegram có '-workdir <thư mục dữ liệu>': vẫn là chương trình Telegram
+        tg = self.w("Programs/Telegram/Telegram", data=b"\x7fELF", mode=0o755)
+        self.desk(".local/share/applications/t.desktop", "Telegram",
+                  f"{tg} -workdir {h}/.local/share/TelegramDesktop/ -- %u")
+        apps = self.apps()
+        self.assertEqual(apps["unmanaged:" + os.path.join(h, "Programs/proj")].state, "unmanaged")
+        self.assertEqual(apps["unmanaged:" + app_js].state, "unmanaged")
+        self.assertEqual(apps["root:" + os.path.join(h, "Programs/node")].state, "ambiguous")  # runtime dùng chung
+        self.assertEqual(apps["root:" + os.path.join(h, "Programs/Telegram")].state, "ok")
+
+    def test_duplicates_and_overrides_are_skipped(self):
+        h = self.home
+        ruff = self.w(".local/bin/ruff", data=b"\x7fELF", mode=0o755)
+        uv = self.w(".local/bin/uv", data=b"\x7fELF", mode=0o755)
+        uvx = self.w(".local/bin/uvx", data=b"\x7fELF", mode=0o755)
+        os.utime(uv, (1_700_000_000, 1_700_000_000))
+        os.utime(uvx, (1_700_000_000, 1_700_000_000))
+        wrap = self.w(".local/bin/code-wrap", "#!/bin/sh\nexec /usr/bin/code --disable-gpu \"$@\"\n", 0o755)
+        self.desk(".local/share/applications/code.desktop", "Visual Studio Code", wrap)
+        apps = self.apps(owned={ruff}, system_desktop_names={"code.desktop"})
+        self.assertNotIn("file:" + ruff, apps)               # đã có ở nguồn pip
+        self.assertEqual(apps["file:" + uv].launchers, [uvx])  # uv + uvx là một sản phẩm
+        self.assertFalse([k for k in apps if "code-wrap" in k])  # bản tuỳ chỉnh lối tắt của app apt
+
+    def test_icons_localized_desktop_and_symlinked_home(self):
+        h = self.home
+        self.w(".config/user-dirs.dirs", 'XDG_DESKTOP_DIR="$HOME/Màn hình nền"\n')
+        os.makedirs(os.path.join(h, "Màn hình nền"))
+        exe = self.w("Programs/Zapp/app", data=b"\x7fELF", mode=0o755)
+        d = self.desk("Màn hình nền/app.desktop", "App", exe, "appicon")
+        self.desk(".local/share/applications/other.desktop", "Other", "/usr/bin/other", "appicon")
+        self.w(".local/share/icons/hicolor/scalable/apps/appicon.svg", "<svg/>")
+        link = os.path.join(os.path.dirname(h), os.path.basename(h) + "-link")
+        os.symlink(h, link)
+        try:
+            from tt_ubuntutools.collectors.home_apps import find_home_apps
+            apps = {a.key: a for a in find_home_apps(home=link)}
+        finally:
+            os.unlink(link)
+        a = apps["root:" + os.path.join(h, "Programs/Zapp")]
+        self.assertIn(d, a.desktop_files)   # thư mục Desktop tiếng Việt được quét
+        self.assertEqual(a.icons, [])       # icon còn được lối tắt khác dùng -> giữ lại
+
+    def test_reaudit_data_files_comments_and_sourced_env(self):
+        h = self.home
+        self.w(".local/share/keepass/Passwords.kdbx", "db")
+        self.w(".local/share/myenv/env.sh", "export A=1")
+        self.w(".local/share/myconf/settings.ini", "x")
+        self.w("Programs/notes/todo.txt", "x")
+        cases = {
+            "kp": "#!/bin/sh\nexec /usr/bin/keepassxc ~/.local/share/keepass/Passwords.kdbx\n",
+            "env": "#!/bin/sh\n. ~/.local/share/myenv/env.sh\nexec code ~/MyCode\n",
+            "cmt": "#!/bin/sh\n# cấu hình ở ~/.local/share/myconf/settings.ini\nexec /usr/bin/xterm\n",
+            "notes": f"#!/bin/sh\nexec gedit {h}/Programs/notes/todo.txt\n",
+        }
+        for name, text in cases.items():
+            l = self.w(f".local/bin/{name}", text, 0o755)
+            self.desk(f".local/share/applications/{name}.desktop", name, l)
+        apps = self.apps()
+        self.assertFalse([a for a in apps.values() if a.state in ("ok", "standalone")], apps)
+        for a in apps.values():
+            for p in a.trash_paths():
+                self.assertFalse(any(x in p for x in ("keepass", "myenv", "myconf", "Programs/notes")), p)
+
+    def test_reaudit_nested_repos_runtime_args_scripts_dirs(self):
+        h = self.home
+        self.w("Programs/work/proj1/.git/HEAD", "x")
+        p1 = self.w("Programs/work/proj1/build/proj1", data=b"\x7fELF", mode=0o755)
+        self.desk(".local/share/applications/p1.desktop", "P1", p1)
+        java = self.w("Programs/jdk-21/bin/java", data=b"\x7fELF", mode=0o755)
+        jar = self.w("MyCode/game/app.jar", "jar")
+        self.desk(".local/share/applications/jar.desktop", "Game", f"{java} -jar {jar}")
+        node = self.w("Programs/node-v20/bin/node", data=b"\x7fELF", mode=0o755)
+        self.w("MyCode/bot/index.js", "x")
+        self.w(".local/share/applications/bot.desktop",
+               f"[Desktop Entry]\nType=Application\nName=Bot\nExec={node} --inspect index.js\nPath={h}/MyCode/bot\n")
+        b = self.w(".local/share/scripts/backup.sh", "#!/bin/sh\nrsync -a a b\n", 0o755)
+        self.w(".local/share/scripts/other-tool.sh", "#!/bin/sh\n", 0o755)
+        self.desk(".local/share/applications/b.desktop", "Backup", b)
+        apps = self.apps()
+        st = {k: a.state for k, a in apps.items()}
+        self.assertNotIn("ok", [st.get("root:" + os.path.join(h, x)) for x in
+                                ("Programs/work", "Programs/jdk-21", "Programs/node-v20", ".local/share/scripts")])
+
+    def test_reaudit_icons_and_grouping(self):
+        h = self.home
+        exe = self.w("Programs/Telegram/Telegram", data=b"\x7fELF", mode=0o755)
+        self.desk(".local/share/applications/t.desktop", "Telegram", exe, "telegram")
+        own = self.w(".local/share/icons/hicolor/256x256/apps/telegram.png", "png")
+        theme = self.w(".local/share/icons/Papirus/48x48/apps/telegram.svg", "<svg/>")
+        for n in ("rg", "rga", "rga-preproc"):
+            f = self.w(f".local/bin/{n}", data=b"\x7fELF", mode=0o755)
+            os.utime(f, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        apps = self.apps()
+        a = apps["root:" + os.path.join(h, "Programs/Telegram")]
+        self.assertIn(own, a.icons)
+        self.assertNotIn(theme, a.icons)     # icon của bộ giao diện (Papirus) không phải của app
+        self.assertEqual(apps["file:" + os.path.join(h, ".local/bin/rg")].launchers, [])
+        self.assertEqual(apps["file:" + os.path.join(h, ".local/bin/rga")].launchers,
+                         [os.path.join(h, ".local/bin/rga-preproc")])
+
+    def test_round3_scripts_runtimes_and_containers(self):
+        """Mọi bố cục tấn công của vòng rà soát 3: KHÔNG cái nào được ở trạng thái gỡ được."""
+        h = self.home
+        elf = b"\x7fELF" + b"\0" * 8
+        self.w("Programs/jdk-21/bin/java", data=elf, mode=0o755)
+        self.w("Programs/jdk-21/release", "x")
+        self.w("MyCode/invoice-tool/target/invoice-tool.jar", "jar")
+        self.w("Programs/node-v20/bin/node", data=elf, mode=0o755)
+        self.w("MyCode/bot/index.js", "x")
+        self.w("Documents/notes/server.js", "x")
+        self.w("Applications/Godot_v4/Godot.x86_64", data=elf, mode=0o755)
+        os.makedirs(os.path.join(h, "Games/platformer"))
+        scripts = {
+            "invoice": '#!/bin/sh\ncd "$HOME/MyCode/invoice-tool" || exit 1\nexec "$HOME/Programs/jdk-21/bin/java" -jar target/invoice-tool.jar "$@"\n',
+            "bot": '#!/bin/bash\nNODE="$HOME/Programs/node-v20/bin/node"\nAPP_DIR="$HOME/MyCode/bot"\nexec "$NODE" "$APP_DIR/index.js" "$@"\n',
+            "notes": "#!/bin/sh\ncd ~/Documents/notes\n~/Programs/node-v20/bin/node server.js\n",
+            "game": '#!/bin/sh\nGAME=~/Games/platformer\nrun(){ exec ~/Applications/Godot_v4/Godot.x86_64 --path "$GAME" "$@"; }\ncase "$1" in *) run "$@";; esac\n',
+            "work": "#!/bin/sh\n~/Programs/node-v20/bin/node &\nfirefox https://x &\nnautilus ~/Documents &\n",
+        }
+        for name, text in scripts.items():
+            l = self.w(f".local/bin/{name}", text, 0o755)
+            self.desk(f".config/autostart/{name}.desktop", name, l)
+        # Lối tắt trực tiếp: tham số tương đối không có Path=, đường dẫn Windows cho wine
+        self.desk(".local/share/applications/rel.desktop", "Rel",
+                  f"{h}/Programs/jdk-21/bin/java -jar MyCode/invoice-tool/target/invoice-tool.jar")
+        self.w("opt/wine-ge/bin/wine", data=elf, mode=0o755)
+        self.desk(".local/share/applications/ga.desktop", "Game A", f'env WINEPREFIX={h}/Games/pfx {h}/opt/wine-ge/bin/wine "C:\\\\GameA\\\\a.exe"')
+        # Thư mục gom nhóm / conda / nhiều venv / script tự viết / tor
+        self.w("Programs/Games/Celeste/Celeste", data=elf, mode=0o755)
+        self.w("Programs/Games/Stardew/saves/farm.sav", "x")
+        self.desk(".local/share/applications/celeste.desktop", "Celeste", f"{h}/Programs/Games/Celeste/Celeste")
+        self.w("Programs/IDEs/android-studio/bin/studio.sh", "#!/bin/sh\n", 0o755)
+        self.desk(".local/share/applications/studio.desktop", "Studio", f"{h}/Programs/IDEs/android-studio/bin/studio.sh")
+        self.w("opt/miniconda3/envs/sci/bin/spyder", data=elf, mode=0o755)
+        self.desk(".local/share/applications/spyder.desktop", "Spyder", f"{h}/opt/miniconda3/envs/sci/bin/spyder %F")
+        os.makedirs(os.path.join(h, ".local/share/venvs/tool/bin"))
+        os.symlink("/usr/bin/python3", os.path.join(h, ".local/share/venvs/tool/bin/python"))
+        self.desk(".local/share/applications/venv.desktop", "Tool", f"{h}/.local/share/venvs/tool/bin/python -m tool")
+        self.w("programs/mygui/main.py", "print(1)", 0o755)
+        self.w("programs/mygui/data.db", "x")
+        self.desk(".local/share/applications/mygui.desktop", "MyGUI", f"python3 {h}/programs/mygui/main.py")
+        self.w("Programs/scripts/backup.sh", "#!/bin/sh\n", 0o755)
+        self.desk(".local/share/applications/backup.desktop", "Backup", f"{h}/Programs/scripts/backup.sh")
+        self.w("Programs/tor-browser/Browser/start-tor-browser", data=elf, mode=0o755)
+        self.desk(".local/share/applications/tor.desktop", "Tor", f"{h}/Programs/tor-browser/Browser/start-tor-browser --detach")
+        apps = self.apps()
+        bad = {k: (a.state, a.trash_paths()) for k, a in apps.items() if a.state in ("ok", "standalone")}
+        self.assertEqual(bad, {})
+
+    def test_round3_walk_is_fail_closed(self):
+        from tt_ubuntutools.collectors import home_apps as ha
+        h = self.home
+        exe = self.w("Programs/devtool/app", data=b"\x7fELF", mode=0o755)
+        for i in range(30):
+            self.w(f"Programs/devtool/big/f{i}", "x")
+        self.w("Programs/devtool/zz/myapp/.git/HEAD", "x")
+        self.desk(".local/share/applications/dev.desktop", "Dev", exe)
+        self.assertIn("quá nhiều", ha.looks_like_project(os.path.join(h, "Programs/devtool"), max_entries=10))
+        self.assertIn(".git", ha.looks_like_project(os.path.join(h, "Programs/devtool")))
+        self.assertEqual(self.apps()["unmanaged:" + os.path.join(h, "Programs/devtool")].state, "unmanaged")
+
+    def test_round3_legit_layouts_still_removable(self):
+        h = self.home
+        elf = b"\x7fELF" + b"\0" * 8
+        code = self.w("Programs/VSCode-linux-x64/code", data=elf, mode=0o755)
+        self.desk(".local/share/applications/code-tar.desktop", "VS Code", f"{code} --unity-launch %F")
+        kitty = self.w(".local/kitty.app/bin/kitty", data=elf, mode=0o755)
+        self.desk(".local/share/applications/kitty.desktop", "kitty", kitty)
+        self.w("Programs/android-studio/bin/studio", data=elf, mode=0o755)
+        sh = self.w("Programs/android-studio/bin/studio.sh", "#!/bin/sh\nexec java -jar x\n", 0o755)
+        self.desk("Desktop/as.desktop", "Android Studio", sh)
+        tg = self.w("Programs/Telegram/Telegram", data=elf, mode=0o755)
+        self.desk(".local/share/applications/tg.desktop", "Telegram", f"{tg} -workdir {h}/.local/share/TelegramDesktop/ -- %u")
+        simple = self.w(".local/bin/foo", f'#!/bin/sh\nexec "$HOME/Programs/foo/foo" "$@"\n', 0o755)
+        self.w("Programs/foo/foo", data=elf, mode=0o755)
+        self.desk(".local/share/applications/foo.desktop", "Foo", simple)
+        st = {k: a.state for k, a in self.apps().items()}
+        for r in ("Programs/VSCode-linux-x64", ".local/kitty.app", "Programs/android-studio", "Programs/Telegram",
+                  "Programs/foo"):
+            self.assertEqual(st.get("root:" + os.path.join(h, r)), "ok", (r, st))
+
+    def test_round4_attack_layouts_are_locked(self):
+        h = self.home
+        elf = b"\x7fELF" + b"\0" * 8
+        # Bot Python của bạn cạnh chromedriver
+        self.w("Programs/autobot/bot.py", "print(1)")
+        self.w("Programs/autobot/data/accounts.csv", "x")
+        self.w("Programs/autobot/chromedriver", data=elf, mode=0o755)
+        run = self.w("Programs/autobot/run.sh", '#!/bin/sh\ncd "$(dirname "$0")"\npython3 bot.py\n', 0o755)
+        self.desk(".local/share/applications/bot1.desktop", "Bot", f"python3 {h}/Programs/autobot/bot.py")
+        self.desk(".local/share/applications/bot2.desktop", "Bot2", run)
+        # Thư mục gom công cụ, prefix kiểu FHS
+        ff = self.w("Programs/tools/ffmpeg", data=elf, mode=0o755)
+        self.w("Programs/tools/mylist.txt", "x")
+        self.desk(".local/share/applications/ff.desktop", "ffmpeg", ff)
+        fo = self.w("opt/bin/foo", data=elf, mode=0o755)
+        self.desk(".local/share/applications/foo.desktop", "foo", fo)
+        lf = self.w("opt/local/bin/lfoo", data=elf, mode=0o755)
+        self.desk(".local/share/applications/lfoo.desktop", "lfoo", lf)
+        # Dự án biên dịch tại chỗ (C, Lazarus)
+        self.w("Programs/mygame/main.c", "int main(){}")
+        g = self.w("Programs/mygame/mygame", data=elf, mode=0o755)
+        self.desk(".local/share/applications/mygame.desktop", "MyGame", g)
+        self.w("Programs/QuanLyHS/QuanLyHS.lpi", "x")
+        q = self.w("Programs/QuanLyHS/QuanLyHS", data=elf, mode=0o755)
+        self.desk(".local/share/applications/qlhs.desktop", "QLHS", q)
+        # Tham số trỏ vào dữ liệu NẰM TRONG thư mục chương trình
+        gd = self.w("Programs/Godot/Godot_v4.3", data=elf, mode=0o755)
+        self.w("Programs/Godot/MyGame/player.gd", "x")
+        self.desk(".local/share/applications/gd.desktop", "Godot proj", f"{gd} -e --path {h}/Programs/Godot/MyGame")
+        ds = self.w("Applications/duckstation/duckstation-qt", data=elf, mode=0o755)
+        self.w("Applications/duckstation/roms/ff7.bin", "x")
+        self.desk(".local/share/applications/ds.desktop", "FF7", f"{ds} {h}/Applications/duckstation/roms/ff7.bin")
+        # Biến môi trường / thư mục dữ liệu với runtime
+        java = self.w("opt/jdk-17/bin/java", data=elf, mode=0o755)
+        self.desk(".local/share/applications/cp.desktop", "CP", f"env CLASSPATH={h}/MyCode/app/classes {java} -Xmx512m com.me.Main")
+        node = self.w("opt/node-v20/bin/node", data=elf, mode=0o755)
+        os.makedirs(os.path.join(h, ".local/share/mybot"))
+        self.desk(".local/share/applications/nb.desktop", "NodeBot", f"{node} {h}/.local/share/mybot")
+        # Comment kết thúc bằng '\' nuốt dòng cd
+        py = self.w("opt/Python-3.12/bin/python3", data=elf, mode=0o755)
+        l = self.w(".local/bin/proj", f"#!/bin/sh\n# launcher \\\ncd ~/MyCode/proj\nexec {py} -m proj \"$@\"\n", 0o755)
+        self.desk(".local/share/applications/proj.desktop", "Proj", l)
+        # Nhiều AppImage cạnh nhau trong một thư mục con
+        a1 = self.w("Programs/AppImgs2/a.AppImage", data=b"\x7fELF" + b"\0" * 4 + b"AI\x02", mode=0o755)
+        self.w("Programs/AppImgs2/b.AppImage", data=b"\x7fELF" + b"\0" * 4 + b"AI\x02", mode=0o755)
+        self.desk(".local/share/applications/a.desktop", "A", a1)
+        apps = self.apps()
+        bad = {k: a.trash_paths() for k, a in apps.items() if a.state == "ok"}
+        self.assertEqual(bad, {})
+
+    def test_round4_shared_ref_single_file_and_broken_ids(self):
+        from tt_ubuntutools.collectors import manual_collector
+        h = self.home
+        elf = b"\x7fELF" + b"\0" * 8
+        qt = self.w(".local/share/qtrt/bin/qtrt", data=elf, mode=0o755)
+        self.w(".local/share/qtrt/lib/libQt6Core.so.6", data=elf)
+        self.desk(".local/share/applications/qt.desktop", "Qt", qt)
+        b = self.w(".local/bin/b", f'#!/bin/sh\nexport LD_LIBRARY_PATH={h}/.local/share/qtrt/lib\nexec {h}/Programs/B/b "$@"\n', 0o755)
+        self.w("Programs/B/b", data=elf, mode=0o755)
+        self.desk(".local/share/applications/b.desktop", "B", b)
+        godot = self.w("Applications/Godot_v4.2.1-stable_linux.x86_64", data=elf, mode=0o755)
+        self.desk(".local/share/applications/godot.desktop", "Godot", f"{godot} %f")
+        # Lối tắt hỏng + liên kết hỏng cùng trỏ vào chương trình đã xoá: hai id khác nhau
+        gone = os.path.join(h, "Programs/old/bin/studio.sh")
+        os.symlink(gone, os.path.join(h, ".local/bin/studio"))
+        self.desk(".local/share/applications/old.desktop", "Old", gone)
+        apps = self.apps()
+        self.assertEqual(apps["root:" + os.path.join(h, ".local/share/qtrt")].state, "ambiguous")
+        self.assertEqual(apps["root:" + godot].state, "ok")
+        self.assertEqual(apps["root:" + godot].trash_paths()[0], godot)
+        ids = [manual_collector._home_item(a, []).id for a in apps.values() if a.state == "broken"]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2)
+
+    def test_round5_gomgo_switch_kept_folder_and_history(self):
+        from tt_ubuntutools.collectors import manual_collector, home_apps as ha
+        from tt_ubuntutools.removal import planner
+        h = self.home
+        app = os.path.join(h, ".local/share/multi-downloader-app")
+        os.makedirs(os.path.join(app, ".venv/bin"))
+        os.symlink("/usr/bin/python3", os.path.join(app, ".venv/bin/python"))
+        self.w(".local/share/multi-downloader-app/requirements.txt", "yt-dlp")
+        self.w(".local/share/multi-downloader-app/multidownloader/__init__.py")
+        self.w(".local/share/multi-downloader-app/assets/logo.png", "x")
+        l = self.w(".local/bin/multi-downloader",
+                   f'#!/bin/sh\ncd {app}\nexec {app}/.venv/bin/python -m multidownloader "$@"\n', 0o755)
+        self.desk(".local/share/applications/gomgo.desktop", "GomGo", f'"{l}"', "gomgo")
+        self.desk("Desktop/gomgo.desktop", "GomGo", f'"{l}"', "gomgo")
+        old = planner.HOME
+        planner.HOME = h
+        try:
+            item = manual_collector._home_item(ha.find_home_apps(home=h)[0], [])
+            self.assertEqual(item.extra["home_state"], "ok")
+            off = planner.make_plan(item)
+            self.assertEqual(off.kept_paths, [app])
+            on = planner.make_plan(item, RemovalOptions(purge=True))
+            self.assertFalse(on.blocked or on.error, (on.blocked_reasons, on.error))
+            self.assertIn(app, on.steps[0].argv)
+            rec = history.make_record(on, RemovalResult(True, 0, "", "ok", ["x"]))
+            self.assertIn("thư mục", rec["option_labels"][0])
+        finally:
+            planner.HOME = old
+
+    def test_round5_groups_icons_unmounted_and_bundled_links(self):
+        h = self.home
+        img = b"\x7fELF" + b"\0" * 4 + b"AI\x02"
+        d1 = self.w("Programs/emulators/DuckStation.AppImage", data=img, mode=0o755)
+        d2 = self.w("Programs/emulators/pcsx2.AppImage", data=img, mode=0o755)
+        self.desk(".local/share/applications/duck.desktop", "DuckStation", d1)
+        self.desk(".local/share/applications/pcsx2.desktop", "PCSX2", d2)
+        tg = self.w("Programs/Telegram/Telegram", data=b"\x7fELF", mode=0o755)
+        icon = self.w(".local/share/icons/hicolor/256x256/apps/telegram.png", "png")
+        self.desk(".local/share/applications/tg.desktop", "Telegram", tg, "telegram")
+        self.desk(".local/share/applications/tgweb.desktop", "TG web", "firefox https://web.telegram.org", icon)
+        os.makedirs(os.path.join(h, "HDD"))
+        self.desk(".local/share/applications/game.desktop", "Game", f"{h}/HDD/Games/Celeste/Celeste")
+        st = self.w("Programs/android-studio/bin/studio", data=b"\x7fELF", mode=0o755)
+        java = self.w("Programs/android-studio/jbr/bin/java", data=b"\x7fELF", mode=0o755)
+        self.desk(".local/share/applications/as.desktop", "AS", st)
+        os.symlink(java, os.path.join(h, ".local/bin/java"))
+        os.symlink(st, os.path.join(h, ".local/bin/studio"))
+        apps = self.apps()
+        self.assertEqual(apps["root:" + os.path.join(h, "Programs/emulators")].state, "ambiguous")
+        self.assertNotIn(icon, apps["root:" + os.path.join(h, "Programs/Telegram")].icons)
+        self.assertFalse([a for a in apps.values() if a.state == "broken"])   # ổ ~/HDD chưa gắn
+        a = apps["root:" + os.path.join(h, "Programs/android-studio")]
+        self.assertEqual(a.launchers, [os.path.join(h, ".local/bin/studio")])  # không lấy theo jbr/bin/java
+
+    def test_round6_kitty_vscode_links_and_unmounted(self):
+        from tt_ubuntutools.collectors import manual_collector, home_apps as ha
+        from tt_ubuntutools.removal import planner
+        h = self.home
+        elf = b"\x7fELF" + b"\0" * 8
+        kitty = self.w(".local/kitty.app/bin/kitty", data=elf, mode=0o755)
+        kitten = self.w(".local/kitty.app/bin/kitten", data=elf, mode=0o755)
+        k1 = self.desk(".local/share/applications/kitty.desktop", "kitty", kitty)
+        k2 = self.desk(".local/share/applications/kitty-open.desktop", "kitty URL", f"{kitty} +open %U")
+        os.symlink(kitty, os.path.join(h, ".local/bin/kitty"))
+        os.symlink(kitten, os.path.join(h, ".local/bin/kitten"))
+        code = self.w("Programs/VSCode-linux-x64/code", data=elf, mode=0o755)
+        self.w("Programs/VSCode-linux-x64/bin/code", "#!/bin/sh\nexec x\n", 0o755)
+        os.symlink(os.path.join(h, "Programs/VSCode-linux-x64/bin/code"), os.path.join(h, ".local/bin/code"))
+        self.desk(".local/share/applications/code.desktop", "VS Code", f"{code} %F")
+        self.desk("Desktop/code.desktop", "VS Code", "code %F")
+        # AppImage đã xoá, ~/AppImages trống: lối tắt hỏng thật (không phải ổ chưa gắn)
+        os.makedirs(os.path.join(h, "AppImages"))
+        self.desk(".local/share/applications/obs.desktop", "Obsidian", f"{h}/AppImages/obsidian.appimage")
+        apps = self.apps()
+        ka = apps["root:" + os.path.join(h, ".local/kitty.app")]
+        self.assertEqual(ka.state, "ok")
+        self.assertEqual(sorted(ka.desktop_files), sorted([k1, k2]))
+        self.assertEqual(ka.folder_links, [os.path.join(h, ".local/bin/kitten")])
+        self.assertEqual(apps["root:" + os.path.join(h, "Programs/VSCode-linux-x64")].state, "ok")
+        self.assertTrue([a for a in apps.values() if a.state == "broken"])
+        old = planner.HOME
+        planner.HOME = h
+        try:
+            item = manual_collector._home_item(ka, [])
+            off = planner.make_plan(item)
+            self.assertNotIn(os.path.join(h, ".local/bin/kitten"), off.steps[0].argv)
+            on = planner.make_plan(item, RemovalOptions(purge=True))
+            self.assertIn(os.path.join(h, ".local/bin/kitten"), on.steps[0].argv)
+        finally:
+            planner.HOME = old
+
+    def test_round6_icon_scan_budget_fails_closed(self):
+        from tt_ubuntutools.collectors import home_apps as ha
+        h = self.home
+        exe = self.w("Programs/Zapp/zapp", data=b"\x7fELF", mode=0o755)
+        self.desk(".local/share/applications/z.desktop", "Z", exe, "zapp")
+        self.w(".local/share/icons/hicolor/scalable/apps/zapp.svg", "<svg/>")
+        self.assertIsNone(ha._extra_user_entries(h, [], budget=0) if os.listdir(
+            os.path.join(h, ".local/share/applications")) else None)
+
+    def test_plan_end_to_end_in_fake_home(self):
+        from tt_ubuntutools.collectors import manual_collector
+        from tt_ubuntutools.removal import planner
+        h = self.home
+        app = os.path.join(h, ".local/share/gg-app")
+        os.makedirs(os.path.join(app, ".venv/bin"))
+        os.symlink("/usr/bin/python3", os.path.join(app, ".venv/bin/python"))
+        launcher = self.w(".local/bin/gg", f"#!/bin/sh\ncd {app}\nexec {app}/.venv/bin/python -m gg\n", 0o755)
+        d = self.desk(".local/share/applications/gg.desktop", "GG", launcher)
+        tool = self.w(".local/bin/tool", data=b"\x7fELF", mode=0o755)
+        old = planner.HOME
+        planner.HOME = h
+        try:
+            items = {i.id: i for i in (manual_collector._home_item(a, []) for a in
+                                       __import__("tt_ubuntutools.collectors.home_apps", fromlist=["x"])
+                                       .find_home_apps(home=h))}
+            # Mặc định: thư mục chương trình được GIỮ LẠI, chỉ gỡ lối tắt + script khởi chạy
+            plan = planner.make_plan(items[app])
+            self.assertFalse(plan.blocked or plan.error, (plan.blocked_reasons, plan.error))
+            self.assertFalse(plan.needs_root)
+            self.assertTrue(plan.supports_purge)
+            self.assertEqual(plan.steps[0].kind, "trash")
+            self.assertEqual(sorted(plan.steps[0].argv), sorted([launcher, d]))
+            # Người dùng tự bật tuỳ chọn -> thư mục cũng vào Thùng rác, kèm danh sách nội dung trong cảnh báo
+            plan = planner.make_plan(items[app], RemovalOptions(purge=True))
+            self.assertEqual(sorted(plan.steps[0].argv), sorted([app, launcher, d]))
+            self.assertTrue(any(".venv/" in w for w in plan.warnings))
+            plan = planner.make_plan(items[tool])
+            self.assertEqual(plan.steps[0].argv, [tool])
+        finally:
+            planner.HOME = old
+
+    def test_denied_and_skipped_locations(self):
+        h = self.home
+        self.w(".local/share/pipx/venvs/black/bin/black", "#!/bin/sh\n", 0o755)
+        self.desk(".local/share/applications/b.desktop", "B", os.path.join(h, ".local/share/pipx/venvs/black/bin/black"))
+        self.w(".local/share/icons/evil", data=b"\x7fELF", mode=0o755)
+        self.desk(".local/share/applications/e.desktop", "E", os.path.join(h, ".local/share/icons/evil"))
+        self.desk(".local/share/applications/sys.desktop", "Sys", "/usr/bin/gedit %U")
+        self.desk(".local/share/applications/cmd.desktop", "Cmd", "firefox %u")
+        apps = self.apps()
+        self.assertFalse([a for a in apps.values() if a.state == "ok"])
+        self.assertTrue(all(".local/share/icons" not in a.root for a in apps.values()))
+
+    def test_broken_shortcut_and_standalone_bin(self):
+        h = self.home
+        d = self.desk(".local/share/applications/gone.desktop", "Gone", os.path.join(h, "Programs/Gone/run"))
+        self.w(".local/bin/tool", data=b"\x7fELF" + b"\0" * 10, mode=0o755)
+        self.w(".local/bin/myscript.sh", "#!/bin/sh\necho mine\n", 0o755)  # script riêng của người dùng: bỏ qua
+        apps = self.apps()
+        broken = [a for a in apps.values() if a.state == "broken"][0]
+        self.assertEqual(broken.trash_paths(), [d])
+        self.assertEqual([a.root for a in apps.values() if a.state == "standalone"],
+                         [os.path.join(h, ".local/bin/tool")])
+
+    def test_planner_revalidates_paths(self):
+        from tt_ubuntutools.removal import planner
+        old = planner.HOME
+        planner.HOME = self.home
+        try:
+            root = os.path.join(self.home, "Programs/Zapp")
+            os.makedirs(root)
+            ok = lambda p: planner._home_path_ok(p, "ok", root)  # noqa: E731
+            self.assertEqual(ok(root), "")
+            self.assertEqual(ok(os.path.join(self.home, "Desktop/a.desktop")), "")
+            self.assertNotEqual(ok(os.path.join(self.home, "Desktop/notes.txt")), "")
+            self.assertNotEqual(ok(os.path.join(self.home, "MyCode")), "")
+            self.assertNotEqual(ok(os.path.join(self.home, "Programs")), "")
+            self.assertNotEqual(ok(self.home), "")
+            self.assertNotEqual(ok("/etc/passwd"), "")
+            self.assertNotEqual(ok(os.path.join(self.home, "Programs/Zapp/../../MyCode")), "")
+            self.assertNotEqual(planner._home_path_ok(os.path.join(self.home, ".local/share/icons"), "ok",
+                                                      os.path.join(self.home, ".local/share/icons")), "")
+        finally:
+            planner.HOME = old
+
+
+class CleanupTest(unittest.TestCase):
+    """Mục Dọn dẹp — thư mục nhà giả; scanners.HOME được trỏ vào đó."""
+
+    def setUp(self):
+        from tt_ubuntutools.cleanup import scanners
+        self.sc = scanners
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        self._old = scanners.HOME
+        scanners.HOME = self.home
+        for d in (".local/share/applications", ".local/bin", "MyCode", "Programs"):
+            os.makedirs(os.path.join(self.home, d))
+
+    def tearDown(self):
+        self.sc.HOME = self._old
+        self.tmp.cleanup()
+
+    def w(self, rel, text="", mode=0o644, data=None):
+        path = os.path.join(self.home, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data if data is not None else text.encode())
+        os.chmod(path, mode)
+        return path
+
+    def items(self):
+        return {i.id: i for i in self.sc.scan_projects()}
+
+    def test_levels_and_defaults(self):
+        sc = self.sc
+        self.assertEqual(set(sc.LEVELS), {sc.SAFE, sc.REVIEW, sc.IRREVERSIBLE, sc.LOCKED})
+        for lvl in sc.LEVELS:
+            it = sc.CleanupItem(id="x", group="cache", kind="tool_cache", title="x", level=lvl, note="n")
+            self.assertEqual(it.default_selected, lvl == sc.SAFE)
+
+    def test_project_detection_and_locks(self):
+        h, sc = self.home, self.sc
+        self.w("MyCode/web/package.json", "{}")
+        self.w("MyCode/web/package-lock.json", "{}")
+        self.w("MyCode/web/node_modules/a/index.js", "x" * 5000)
+        self.w("MyCode/nolock/package.json", "{}")
+        self.w("MyCode/nolock/node_modules/a/index.js", "x")
+        self.w(".vscode/extensions/ext/package.json", "{}")
+        self.w(".vscode/extensions/ext/package-lock.json", "{}")
+        self.w(".vscode/extensions/ext/node_modules/a.js", "x")
+        self.w("MyCode/py/requirements.txt", "requests")
+        self.w("MyCode/py/.venv/pyvenv.cfg", "home = /usr/bin")
+        self.w("Desktop/CodePython/.venv/pyvenv.cfg", "home = /usr/bin")
+        self.w("MyCode/py/pkg/__pycache__/m.cpython-314.pyc", "x")
+        self.w("MyCode/py/odd/__pycache__/notes.txt", "mine")
+        self.w("MyCode/site/package.json", '{"dependencies": {"next": "15"}}')
+        self.w("MyCode/site/.next/cache/x", "x")
+        os.symlink(os.path.join(h, "MyCode/web/node_modules"), os.path.join(h, "MyCode/link_nm"))
+        its = self.items()
+        get = lambda p: its.get("project:" + os.path.join(h, p))  # noqa: E731
+        self.assertEqual(get("MyCode/web/node_modules").level, sc.REVIEW)
+        self.assertEqual(get("MyCode/nolock/node_modules").level, sc.LOCKED)
+        self.assertIsNone(get(".vscode/extensions/ext/node_modules"))     # ruột ứng dụng: không quét
+        self.assertEqual(get("MyCode/py/.venv").level, sc.REVIEW)
+        self.assertEqual(get("Desktop/CodePython/.venv").level, sc.LOCKED)  # không biết cách cài lại
+        self.assertEqual(get("MyCode/site/.next").level, sc.REVIEW)
+        py = [i for i in its.values() if i.kind == "pycache"]
+        self.assertEqual(len(py), 1)
+        self.assertEqual(py[0].level, sc.SAFE)
+        self.assertEqual(py[0].paths, [os.path.join(h, "MyCode/py/pkg/__pycache__")])  # thư mục lạ bị loại
+        self.assertFalse([i for i in its.values() if "link_nm" in i.id])
+
+    def test_installed_app_internals_are_locked(self):
+        from tt_ubuntutools.collectors import home_apps
+        h, sc = self.home, self.sc
+        exe = self.w("Programs/ElectronApp/electronapp", data=b"\x7fELF" + b"\0" * 8, mode=0o755)
+        self.w("Programs/ElectronApp/resources/app/package.json", "{}")
+        self.w("Programs/ElectronApp/package.json", "{}")
+        self.w("Programs/ElectronApp/package-lock.json", "{}")
+        self.w("Programs/ElectronApp/node_modules/x.js", "x")
+        self.w(".local/share/applications/e.desktop",
+               f"[Desktop Entry]\nType=Application\nName=E\nExec={exe}\n")
+        old = home_apps.HOME
+        try:
+            its = self.items()
+        finally:
+            home_apps.HOME = old
+        it = its["project:" + os.path.join(h, "Programs/ElectronApp/node_modules")]
+        # Dự án có package.json ở gốc nên home_apps khoá chính app; dù vậy node_modules không bao giờ ở mức xoá được
+        # khi thuộc thư mục của một chương trình có lối tắt.
+        self.assertIn(it.level, (sc.LOCKED,))
+
+    def test_recheck_and_plan(self):
+        from tt_ubuntutools.cleanup.plan import build_cleanup_plan
+        h, sc = self.home, self.sc
+        self.w("MyCode/web/package.json", "{}")
+        lock = self.w("MyCode/web/package-lock.json", "{}")
+        nm = os.path.join(h, "MyCode/web/node_modules")
+        self.w("MyCode/web/node_modules/a.js", "x")
+        its = self.items()
+        it = its["project:" + nm]
+        locked = sc.CleanupItem(id="l", group="project", kind="none", title="L", level=sc.LOCKED, note="", reason="r")
+        cp = build_cleanup_plan([it, locked])
+        self.assertEqual([s.kind for s in cp.plan.steps], ["delete"])
+        self.assertEqual(cp.plan.steps[0].argv, [nm])
+        self.assertEqual(cp.dropped[0][0].id, "l")
+        os.unlink(lock)  # trạng thái đổi sau khi quét -> kiểm tra lại phải từ chối
+        self.assertIn("lockfile", sc.recheck("node_modules", nm))
+        cp = build_cleanup_plan([it])
+        self.assertFalse(cp.plan.steps)
+        self.assertTrue(cp.plan.error)
+
+    def test_runner_delete_step_rechecks_before_deleting(self):
+        from gi.repository import GLib
+        from tt_ubuntutools.removal.runner import RemovalRunner
+        h = self.home
+        self.w("MyCode/a/package.json", "{}")
+        self.w("MyCode/a/yarn.lock", "")
+        self.w("MyCode/a/node_modules/deep/x.js", "x")
+        self.w("MyCode/b/package.json", "{}")                 # không có lockfile -> phải bị bỏ qua
+        self.w("MyCode/b/node_modules/keep.js", "keep")
+        a, b = os.path.join(h, "MyCode/a/node_modules"), os.path.join(h, "MyCode/b/node_modules")
+        plan = RemovalPlan(SoftwareItem(Source.MANUAL, "cleanup", "cleanup"), RemovalOptions())
+        plan.steps = [Step("delete", [a, b], label="nm", check="node_modules")]
+        loop, out = GLib.MainLoop(), {}
+        r = RemovalRunner(plan, lambda l: None, lambda res: (out.setdefault("r", res), GLib.idle_add(loop.quit)),
+                          success_message="Dọn dẹp xong.")
+        GLib.idle_add(lambda: (r.start(), False)[1])
+        GLib.timeout_add_seconds(20, loop.quit)
+        loop.run()
+        self.assertTrue(out["r"].success)
+        self.assertFalse(os.path.exists(a))
+        self.assertTrue(os.path.exists(os.path.join(b, "keep.js")))
+        self.assertEqual([p for p, _ in r.skipped], [b])
+
+    def test_vscode_obsolete_and_trash(self):
+        h, sc = self.home, self.sc
+        ext = os.path.join(h, ".vscode/extensions")
+        self.w(".vscode/extensions/a.ext-1.0/package.json", "{}")
+        self.w(".vscode/extensions/a.ext-2.0/package.json", "{}")
+        self.w(".vscode/extensions/b.ext-1.0/package.json", "{}")
+        self.w(".vscode/extensions/.obsolete", '{"a.ext-1.0": true, "b.ext-1.0": true}')
+        self.w(".vscode/extensions/extensions.json",
+               '[{"relativeLocation": "a.ext-2.0"}, {"location": {"path": "%s/b.ext-1.0"}}]' % ext)
+        its = [i for i in sc.scan_browser() if i.kind == "vscode_obsolete"]
+        self.assertEqual(its[0].paths, [os.path.join(ext, "a.ext-1.0")])  # b vẫn đang dùng -> giữ
+        self.w(".vscode/extensions/extensions.json", "{broken")
+        self.assertFalse([i for i in sc.scan_browser() if i.kind == "vscode_obsolete"])  # không đọc được -> không xoá
+        self.w(".local/share/Trash/files/old.txt", "x")
+        self.w(".local/share/Trash/info/old.txt.trashinfo", "x")
+        t = [i for i in sc.scan_projects() if i.kind == "trash"][0]
+        self.assertEqual(t.level, sc.IRREVERSIBLE)
+        self.assertFalse(t.default_selected)
+
+    def test_round1_venv_contents_running_and_keep_going(self):
+        h, sc = self.home, self.sc
+        self.w("MyCode/bot/requirements.txt", "x")
+        self.w("MyCode/bot/venv/pyvenv.cfg", "home = /usr/bin")
+        self.w("MyCode/bot/venv/src/mylib/core.py", "mine")          # pip -e git+... -> mã nguồn của bạn
+        self.w("MyCode/ok/requirements.txt", "x")
+        self.w("MyCode/ok/.venv/pyvenv.cfg", "home = /usr/bin")
+        self.w("MyCode/ok/.venv/lib/python3.14/site-packages/x.py", "x")
+        self.w("MyCode/git/requirements.txt", "x")
+        self.w("MyCode/git/.venv/pyvenv.cfg", "x")
+        self.w("MyCode/git/.venv/lib/pkg/.git/HEAD", "x")
+        its = self.items()
+        self.assertEqual(its["project:" + os.path.join(h, "MyCode/bot/venv")].level, sc.LOCKED)
+        self.assertEqual(its["project:" + os.path.join(h, "MyCode/ok/.venv")].level, sc.REVIEW)
+        self.assertEqual(its["project:" + os.path.join(h, "MyCode/git/.venv")].level, sc.LOCKED)
+        # snap: bản đang dùng không bao giờ là "bản cũ", kể cả khi snap bị disable
+        all_ = ("Name  Version  Rev  Tracking  Publisher  Notes\n"
+                "foo   1        10   latest    me         disabled\n"
+                "foo   2        11   latest    me         disabled\n"
+                "a_b   1        5    latest    me         disabled\n")
+        cur = "Name  Version  Rev  Tracking  Publisher  Notes\nfoo   2        11   latest    me         disabled\n"
+        self.assertEqual(sc.parse_snap_list_all(all_, sc.parse_snap_current(cur)), [("foo", "10")])
+
+    def test_round1_runner_keeps_going(self):
+        from gi.repository import GLib
+        from tt_ubuntutools.removal.runner import RemovalRunner
+        h = self.home
+        self.w("MyCode/a/package.json", "{}")
+        self.w("MyCode/a/yarn.lock", "")
+        self.w("MyCode/a/node_modules/x.js", "x")
+        plan = RemovalPlan(SoftwareItem(Source.MANUAL, "cleanup", "cleanup"), RemovalOptions())
+        plan.steps = [Step("cmd", ["/bin/false"], label="lệnh hỏng"),
+                      Step("delete", [os.path.join(h, "MyCode/a/node_modules")], label="nm", check="node_modules")]
+        loop, out = GLib.MainLoop(), {}
+        r = RemovalRunner(plan, lambda l: None, lambda res: (out.setdefault("r", res), GLib.idle_add(loop.quit)),
+                          keep_going=True)
+        GLib.idle_add(lambda: (r.start(), False)[1])
+        GLib.timeout_add_seconds(20, loop.quit)
+        loop.run()
+        self.assertFalse(out["r"].success)
+        self.assertFalse(os.path.exists(os.path.join(h, "MyCode/a/node_modules")))  # mục sau vẫn được dọn
+        self.assertEqual([e[0] for e in r.errors], ["lệnh hỏng"])
+
+    def test_round2_nested_git_and_tracked_files(self):
+        import subprocess as sp
+        h, sc = self.home, self.sc
+        self.w("MyCode/fork/package.json", "{}")
+        self.w("MyCode/fork/package-lock.json", "{}")
+        self.w("MyCode/fork/node_modules/@s/pkg/.git/HEAD", "x")
+        self.w("MyCode/fork/node_modules/@s/pkg/index.js", "edited")
+        self.assertIn(".git", sc.recheck("node_modules", os.path.join(h, "MyCode/fork/node_modules")))
+        if shutil.which("git"):
+            proj = os.path.join(h, "MyCode/tracked")
+            self.w("MyCode/tracked/package.json", "{}")
+            self.w("MyCode/tracked/package-lock.json", "{}")
+            self.w("MyCode/tracked/node_modules/mine/index.js", "my code")
+            env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                       GIT_COMMITTER_EMAIL="t@t")
+            sp.run(["git", "init", "-q", proj], check=True, env=env)
+            sp.run(["git", "-C", proj, "add", "-f", "node_modules/mine/index.js"], check=True, env=env)
+            self.assertIn("git", sc.recheck("node_modules", os.path.join(proj, "node_modules")))
+
+    def test_round2_stale_snap_revisions_dropped_at_plan_time(self):
+        from tt_ubuntutools.cleanup import plan as cplan
+        sc = self.sc
+        it = sc.CleanupItem(id="system:snap", group="system", kind="root", title="snap", level=sc.SAFE, note="",
+                            method="root", argv=[["snap-remove-revision", "a", "--revision", "1"],
+                                                 ["snap-remove-revision", "b", "--revision", "7"]])
+        import types
+        all_ = "Name Version Rev Tracking Publisher Notes\na 1 1 l p disabled\na 2 2 l p -\nb 3 9 l p -\n"
+        cur = "Name Version Rev Tracking Publisher Notes\na 2 2 l p -\nb 3 9 l p -\n"
+        old = cplan.__dict__.get("run")
+        import tt_ubuntutools.utils as u
+        orig = u.run
+        u.run = lambda cmd, timeout=60, **k: types.SimpleNamespace(returncode=0, stdout=all_ if "--all" in cmd else cur,
+                                                                   stderr="")
+        try:
+            self.assertEqual(cplan._fresh_root_argv(it), [["snap-remove-revision", "a", "--revision", "1"]])
+        finally:
+            u.run = orig
+
+    def test_round3_literal_pathspec_and_snap_timeout(self):
+        import subprocess as sp
+        import types
+        h, sc = self.home, self.sc
+        if shutil.which("git"):
+            proj = os.path.join(h, "code/:weird")
+            self.w("code/:weird/package.json", "{}")
+            self.w("code/:weird/package-lock.json", "{}")
+            self.w("code/:weird/node_modules/foo/index.js", "mine")
+            env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                       GIT_COMMITTER_EMAIL="t@t")
+            sp.run(["git", "init", "-q", os.path.join(h, "code")], check=True, env=env)
+            sp.run(["git", "-C", os.path.join(h, "code"), "add", "-f", "--", ":(literal):weird/node_modules/foo/index.js"],
+                   check=True, env=env)
+            self.assertIn("git", sc.recheck("node_modules", os.path.join(proj, "node_modules")))
+        from tt_ubuntutools.cleanup import plan as cplan
+        import tt_ubuntutools.utils as u
+        it = sc.CleanupItem(id="system:snap", group="system", kind="root", title="snap", level=sc.SAFE, note="",
+                            method="root", argv=[["snap-remove-revision", "a", "--revision", "1"]])
+        orig = u.run
+
+        def boom(cmd, timeout=60, **k):
+            raise sp.TimeoutExpired(cmd, timeout)
+        u.run = boom
+        try:
+            cp = cplan.build_cleanup_plan([it])
+        finally:
+            u.run = orig
+        self.assertEqual([d[0].id for d in cp.dropped], ["system:snap"])  # bị loại, không ném lỗi
+
+    def test_parsers(self):
+        sc = self.sc
+        snap = ("Name      Version   Rev    Tracking       Publisher   Notes\n"
+                "core22    2024      2955   latest/stable  canonical✓  base,disabled\n"
+                "core22    2025      3001   latest/stable  canonical✓  base\n"
+                "firefox   140       8763   latest/stable  mozilla✓    disabled\n")
+        self.assertEqual(sc.parse_snap_list_all(snap), [("core22", "2955"), ("firefox", "8763")])
+        self.assertEqual(sc.parse_journal_usage("Archived and active journals take up 525.8M in the file system."),
+                         int(525.8 * 1024 ** 2))
+
+
+class HelperCleanupTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.h = load_helper()
+
+    def test_build(self):
+        h = self.h
+        self.assertEqual(h.build(["apt-clean"])["action"], "apt-clean")
+        self.assertEqual(h.build(["journal-vacuum", "--size", "100M"])["size"], "100M")
+        self.assertEqual(h.build(["snap-remove-revision", "core22", "--revision", "2955"])["revision"], "2955")
+        for bad in (["apt-clean", "x"], ["journal-vacuum", "--size", "10M"], ["journal-vacuum", "--size", "5G"],
+                    ["journal-vacuum", "--size", "1;rm"], ["snap-remove-revision", "core22", "--revision", "-1"],
+                    ["snap-remove-revision", "Bad Name", "--revision", "1"],
+                    ["snap-remove-revision", "core22", "--revision", "1", "--purge"]):
+            with self.assertRaises(h.UsageError, msg=bad):
+                h.build(bad)
+
+    def test_snap_revision_must_be_disabled(self):
+        h = self.h
+        import types
+        out = ("Name    Version  Rev   Tracking  Publisher  Notes\n"
+               "core22  1        2955  latest    canonical  base,disabled\n"
+               "core22  2        3001  latest    canonical  base\n")
+        cur = ("Name    Version  Rev   Tracking  Publisher  Notes\n"
+               "core22  2        3001  latest    canonical  base\n")
+        old = h.capture
+        h.capture = lambda cmd, timeout=300: types.SimpleNamespace(
+            returncode=0, stdout=out if "--all" in cmd else cur, stderr="")
+        try:
+            h.check_snap_revision(h.build(["snap-remove-revision", "core22", "--revision", "2955"]))
+            with self.assertRaises(h.SafetyError):
+                h.check_snap_revision(h.build(["snap-remove-revision", "core22", "--revision", "3001"]))
+            with self.assertRaises(h.SafetyError):
+                h.check_snap_revision(h.build(["snap-remove-revision", "core22", "--revision", "9999"]))
+            # snap bị `snap disable`: bản đang dùng cũng ghi 'disabled' -> vẫn không được gỡ
+            out = out.replace("2        3001  latest    canonical  base\n", "2        3001  latest    canonical  base,disabled\n")
+            with self.assertRaises(h.SafetyError):
+                h.check_snap_revision(h.build(["snap-remove-revision", "core22", "--revision", "3001"]))
+        finally:
+            h.capture = old
 
 
 class UtilsTest(unittest.TestCase):

@@ -40,6 +40,39 @@ install -m 0644 "$ROOT/LICENSE" "$DOC/copyright"
 cat > "$STAGE/changelog.tmp" <<EOF
 $PKG ($VERSION) unstable; urgency=medium
 
+  * Bố cục lại: hai khu vực ngang hàng "Gỡ cài đặt" / "Dọn dẹp" ở đầu cửa sổ,
+    cùng kiểu 3 cột (nhóm · bảng · chi tiết).
+  * Bỏ dải nhắc dọn dẹp; bảng Dọn dẹp gọn lại (cột "Ngày sửa"), không còn
+    tiêu đề cột bị che.
+
+ -- THMK V-Soft <ttvn92i2026@gmail.com>  $(LC_ALL=C date -R)
+
+$PKG (1.2.0) unstable; urgency=medium
+
+  * Mục Dọn dẹp (Ctrl+K): bộ nhớ đệm công cụ, gói .deb đã tải, bản snap cũ,
+    nhật ký journal, bộ nhớ đệm trình duyệt, tiện ích VS Code lỗi thời,
+    node_modules / .venv / .next / __pycache__ của dự án và Thùng rác — phân
+    loại theo mức an toàn bằng màu và ghi chú; chỉ chọn sẵn mục An toàn.
+  * Helper thêm apt-clean, journal-vacuum, snap-remove-revision (chỉ gỡ bản
+    snap đang tắt).
+
+ -- THMK V-Soft <ttvn92i2026@gmail.com>  Tue, 10 Nov 2026 08:00:00 +0700
+
+$PKG (1.1.0) unstable; urgency=medium
+
+  * Nhận ra phần mềm tự cài trong thư mục nhà (~/Programs, ~/Applications,
+    ~/.local/share..., lệnh trong ~/.local/bin, lối tắt hỏng) — vd. bản GomGo
+    thứ hai còn sót sau khi gỡ gói .deb. Chỉ nhận những gì khớp đúng mẫu của
+    một bản cài; dự án / dữ liệu / runtime dùng chung chỉ được liệt kê.
+  * Mặc định chỉ gỡ lối tắt, lệnh khởi chạy, biểu tượng; thư mục chương trình
+    chỉ vào Thùng rác khi người dùng tự bật tuỳ chọn và xem nội dung.
+  * Chuyển vào Thùng rác chạy nền (không đứng giao diện); cảnh báo chương
+    trình đang chạy; lịch sử ghi rõ tuỳ chọn và phần được giữ lại.
+
+ -- THMK V-Soft <ttvn92i2026@gmail.com>  Tue, 10 Nov 2026 06:35:04 +0700
+
+$PKG (1.0.0) unstable; urgency=medium
+
   * Bản phát hành 1.0: thống kê phần mềm theo phương thức cài (APT, PPA /
     kho bên thứ ba, file .deb, Snap, Flatpak, AppImage, pip, npm, cài thủ
     công) và gỡ từng phần mềm với xem trước, purge / autoremove, luật bảo vệ
@@ -48,7 +81,7 @@ $PKG ($VERSION) unstable; urgency=medium
     gỡ xong; chặn khi dpkg bị ngắt giữa chừng hoặc gói đang bị apt-mark hold.
   * Đóng góp dự án (Buy me a coffee): nút riêng trên thanh tiêu đề, hộp thoại có mã VietQR.
 
- -- THMK V-Soft <ttvn92i2026@gmail.com>  $(LC_ALL=C date -R)
+ -- THMK V-Soft <ttvn92i2026@gmail.com>  Mon, 09 Nov 2026 15:40:00 +0700
 EOF
 gzip -9n -c "$STAGE/changelog.tmp" > "$DOC/changelog.Debian.gz"
 rm "$STAGE/changelog.tmp"

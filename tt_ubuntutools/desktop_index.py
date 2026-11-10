@@ -29,6 +29,7 @@ class DesktopEntry:
     comment_vi: str = ""
     icon: str = ""
     exec: str = ""
+    workdir: str = ""  # khoá Path= (thư mục làm việc)
     no_display: bool = False
 
     @property
@@ -76,6 +77,8 @@ def parse_desktop_file(path: str) -> DesktopEntry | None:
                     entry.icon = val
                 elif key == "Exec":
                     entry.exec = val
+                elif key == "Path":
+                    entry.workdir = val
                 elif key == "Type":
                     entry_type = val
                 elif key in ("NoDisplay", "Hidden") and val.lower() == "true":

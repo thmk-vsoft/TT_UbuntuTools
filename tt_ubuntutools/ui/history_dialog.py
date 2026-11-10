@@ -19,7 +19,7 @@ def _fmt_time(s: str) -> str:
 
 class HistoryDialog(Adw.Dialog):
     def __init__(self):
-        super().__init__(title="Lịch sử gỡ cài đặt", content_width=640, content_height=620)
+        super().__init__(title="Lịch sử gỡ cài đặt & dọn dẹp", content_width=640, content_height=620)
         tv = Adw.ToolbarView()
         header = Adw.HeaderBar()
         self.clear_btn = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Xoá lịch sử")
@@ -58,10 +58,11 @@ class HistoryDialog(Adw.Dialog):
         records = history.load()
         if self.group:
             self.page.remove(self.group)
-        total_freed = sum(int(r.get("freed_bytes") or 0) for r in records if r.get("success"))
+        total_freed = sum(int(r.get("freed_bytes") or 0) for r in records
+                          if r.get("success") or (r.get("source") == "cleanup" and r.get("partial")))
         ok = sum(1 for r in records if r.get("success"))
         self.group = Adw.PreferencesGroup(
-            title=f"{len(records)} lần gỡ",
+            title=f"{len(records)} lần gỡ / dọn dẹp",
             description=f"{ok} thành công, {len(records) - ok} thất bại · đã giải phóng {human_size(total_freed)}")
         self.page.add(self.group)
         for r in records:
@@ -69,23 +70,30 @@ class HistoryDialog(Adw.Dialog):
             exp = Adw.ExpanderRow(
                 title=GLib.markup_escape_text(f"{r.get('name', '?')} — {r.get('source_label', '')}"),
                 subtitle=GLib.markup_escape_text(
-                    f"{_fmt_time(r.get('time'))} · {'Thành công' if success else 'Thất bại'}"
-                    + (f" · giải phóng {human_size(r.get('freed_bytes'))}" if success and r.get("freed_bytes") else "")),
+                    f"{_fmt_time(r.get('time'))} · "
+                    + ("Thành công" if success else ("Một phần" if r.get("partial") else "Thất bại"))
+                    + (f" · giải phóng {human_size(r.get('freed_bytes'))}"
+                       if (success or r.get("partial")) and r.get("freed_bytes") else "")),
             )
             icon = Gtk.Image.new_from_icon_name("emblem-ok-symbolic" if success else "dialog-error-symbolic")
             icon.add_css_class("success" if success else "error")
             exp.add_prefix(icon)
-            opts = []
-            if r.get("purge"):
-                opts.append("purge")
-            if r.get("autoremove"):
-                opts.append("autoremove")
+            opts = [str(x) for x in r.get("option_labels") or [] if isinstance(x, str)]
+            if not opts and "option_labels" not in r:  # bản ghi cũ
+                if r.get("purge"):
+                    opts.append("purge")
+                if r.get("autoremove"):
+                    opts.append("autoremove")
+            if r.get("kept"):
+                opts.append("giữ lại: " + ", ".join(str(x) for x in r.get("kept") if isinstance(x, str)))
             detail = (
                 f"Phiên bản: {r.get('version') or '—'}\n"
                 f"Tuỳ chọn: {', '.join(opts) or 'không'}\n"
                 f"Bị gỡ: {', '.join(r.get('affected') or []) or '—'}\n"
                 f"Kết quả: {r.get('message', '')} (mã {r.get('exit_code')})\n"
-                + {True: "Kiểm tra lại: đã không còn trên máy\n", False: "Kiểm tra lại: VẪN còn trên máy\n"}
+                + ({True: "Kiểm tra lại: lối tắt và lệnh khởi chạy đã được gỡ (thư mục chương trình vẫn còn)\n",
+                    False: "Kiểm tra lại: VẪN còn trên máy\n"} if r.get("kept") else
+                   {True: "Kiểm tra lại: đã không còn trên máy\n", False: "Kiểm tra lại: VẪN còn trên máy\n"})
                 .get(r.get("verified"), "")
                 + "\n" + (r.get("log_tail") or "")
             )

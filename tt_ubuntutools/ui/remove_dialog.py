@@ -309,7 +309,10 @@ class RemoveDialog(Adw.Dialog):
         self.result_status.set_icon_name("emblem-ok-symbolic" if ok else "dialog-error-symbolic")
         self.result_status.set_title("Đã gỡ thành công" if ok else
                                      ("Mới gỡ được một phần" if result.partial else "Gỡ không thành công"))
-        self.result_status.set_description(GLib.markup_escape_text(display(result.message)))
+        msg = result.message
+        if ok and self.plan.kept_paths:
+            msg = "Đã gỡ lối tắt, lệnh khởi chạy và biểu tượng. Thư mục chương trình được giữ lại theo lựa chọn của bạn."
+        self.result_status.set_description(GLib.markup_escape_text(display(msg)))
 
         def row(title, value):
             r = Adw.ActionRow(title=title, subtitle=GLib.markup_escape_text(display(value) or "—"),
@@ -324,8 +327,13 @@ class RemoveDialog(Adw.Dialog):
                 row("Dung lượng giải phóng", human_size(self.plan.freed_bytes))
             elif self.plan.trashed_bytes:
                 row("Đã chuyển vào Thùng rác", human_size(self.plan.trashed_bytes) + " (dọn Thùng rác để giải phóng)")
-            row("Kiểm tra lại", {True: "Phần mềm không còn trên máy ✔",
-                                 None: "Không kiểm tra lại được — hãy bấm Làm mới để xem"}[result.verified])
+            if self.plan.kept_paths:
+                row("Vẫn giữ lại", ", ".join(self.plan.kept_paths) + " — xoá thủ công nếu không cần nữa")
+                row("Kiểm tra lại", {True: "Lối tắt và lệnh khởi chạy đã được gỡ ✔ (thư mục chương trình vẫn còn)",
+                                     None: "Không kiểm tra lại được — hãy bấm Làm mới để xem"}[result.verified])
+            else:
+                row("Kiểm tra lại", {True: "Phần mềm không còn trên máy ✔",
+                                     None: "Không kiểm tra lại được — hãy bấm Làm mới để xem"}[result.verified])
         else:
             if result.partial and result.completed:
                 row("Đã thực hiện được", ", ".join(result.completed))

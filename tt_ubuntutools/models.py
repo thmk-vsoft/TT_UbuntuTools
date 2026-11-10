@@ -107,6 +107,8 @@ class Step:
 
     kind = 'cmd'   : chạy argv (nếu root=True thì argv là tham số cho helper qua pkexec)
     kind = 'trash' : chuyển các đường dẫn trong argv vào Thùng rác (không cần root)
+    kind = 'delete': XOÁ VĨNH VIỄN các đường dẫn trong argv (không cần root); trước khi xoá từng đường dẫn,
+                     kiểm tra lại bằng bộ nhận diện `check` của mục dọn dẹp (cleanup.scanners.recheck)
     """
 
     kind: str
@@ -114,10 +116,14 @@ class Step:
     root: bool = False
     label: str = ""
     env: dict | None = None  # biến môi trường bổ sung (chỉ cho bước không cần root)
+    check: str = ""          # loại mục dọn dẹp (bước 'delete')
+    tag: str = ""            # id mục dọn dẹp mà bước này thuộc về (báo cáo kết quả theo mục)
 
     def display(self) -> str:
         if self.kind == "trash":
             return "Chuyển vào Thùng rác: " + ", ".join(self.argv)
+        if self.kind == "delete":
+            return "Xoá vĩnh viễn: " + ", ".join(self.argv[:6]) + (f" … (+{len(self.argv) - 6})" if len(self.argv) > 6 else "")
         prefix = "pkexec tt-ubuntutools-helper " if self.root else ""
         return prefix + " ".join(self.argv)
 
@@ -137,6 +143,7 @@ class RemovalPlan:
     purge_label: str = "Xoá cả file cấu hình (purge)"
     autoremove_label: str = "Dọn các gói phụ thuộc không còn dùng (autoremove)"
     error: str = ""
+    kept_paths: list[str] = field(default_factory=list)   # phần được GIỮ LẠI có chủ đích (vd. thư mục chương trình)
 
     @property
     def blocked(self) -> bool:

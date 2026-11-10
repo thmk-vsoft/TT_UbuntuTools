@@ -6,10 +6,17 @@ Công cụ đồ hoạ (GTK4 / libadwaita) để **thống kê phần mềm đã
 - **Buy me a coffee ☕**: ủng hộ dự án nếu bạn thấy phần mềm hữu ích — nút **Đóng góp dự án** trong phần mềm.
 
 ## Tính năng
-- Nguồn: APT (kho Ubuntu) · PPA / kho bên thứ ba · file `.deb` cài tay · Snap · Flatpak · AppImage · pip/pipx · npm toàn cục · cài thủ công (`/opt`, `/usr/local/bin`). Nguồn nào máy không có thì tự bỏ qua.
+- Nguồn: APT (kho Ubuntu) · PPA / kho bên thứ ba · file `.deb` cài tay · Snap · Flatpak · AppImage · pip/pipx · npm toàn cục · cài thủ công (`/opt`, `/usr/local/bin`) · **phần mềm tự cài trong thư mục nhà** (`~/Programs`, `~/Applications`, `~/opt`, `~/.local/share`… kèm lối tắt và lệnh trong `~/.local/bin`). Nguồn nào máy không có thì tự bỏ qua.
 - Cột: tên + biểu tượng + mô tả, phương thức, phiên bản, dung lượng, ngày cài, nguồn kho. Sắp xếp theo cột, tìm kiếm, lọc theo nguồn.
 - Chế độ **Ứng dụng** (mặc định: có lối tắt menu hoặc do bạn tự cài) / **Tất cả gói**.
 - Gỡ **từng** phần mềm: xem trước toàn bộ gói bị gỡ theo, tuỳ chọn purge / autoremove, báo kết quả và kiểm tra lại, lưu **lịch sử** (`~/.local/share/tt-ubuntutools/history.jsonl`).
+
+- **Dọn dẹp** (Ctrl+K): tìm dữ liệu tạo lại được hoặc không còn dùng và cho bạn chọn xoá, mỗi mục có **nhãn màu theo mức an toàn** và ghi chú điều gì xảy ra sau khi xoá:
+  - 🟢 **An toàn** (chọn sẵn): bộ nhớ đệm pip / uv / npm / yarn / pnpm, `__pycache__`, gói `.deb` apt đã tải, bản snap cũ đang tắt, nhật ký journal cũ (giữ 100 MB), bản tiện ích VS Code mà VS Code đã đánh dấu lỗi thời.
+  - 🟡 **Cân nhắc**: `node_modules`, `.venv`, `.next`… của dự án (kèm ngày sửa gần nhất và lệnh cài lại), bộ nhớ đệm trình duyệt.
+  - 🔴 **Không khôi phục được**: Thùng rác (phải tích thêm ô xác nhận).
+  - ⚪ **Bị khoá** (kèm lý do): thư mục bên trong ứng dụng (`~/.vscode`, `~/.config`…), `node_modules` không có lockfile, `.venv` không có `requirements.txt` / `pyproject.toml`, môi trường của chương trình đã cài, trình duyệt đang mở, thư mục đang được chương trình chạy dùng.
+  Thư mục dự án được xoá vĩnh viễn để giải phóng chỗ ngay; mỗi đường dẫn được kiểm tra lại ngay trước khi xoá. Việc cần quyền quản trị (snap cũ, apt, journal) đi qua helper và chỉ hỏi mật khẩu một lần.
 
 ## An toàn
 - **Luật bảo vệ** chặn gỡ: gói Essential / required / important; kernel đang chạy và gói kernel chính; bootloader, công cụ initramfs (dracut, initramfs-tools), công cụ ổ đĩa (cryptsetup, lvm2, mdadm, zfs, btrfs); firmware; mạng; desktop và màn hình đăng nhập của GNOME, KDE, Xfce, LXQt, MATE, Cinnamon, Budgie; trình đăng nhập và các phiên desktop đã cài trên chính máy bạn; polkit agent đang chạy; SSH / RDP / chia sẻ màn hình GNOME khi dịch vụ đó đang bật hoặc đang có phiên điều khiển từ xa; nền tảng snap (snapd, apparmor); snap nền / snap dùng chung; thư mục runtime của dịch vụ và chương trình đang được dịch vụ systemd dùng.
@@ -19,6 +26,7 @@ Công cụ đồ hoạ (GTK4 / libadwaita) để **thống kê phần mềm đã
 - Helper giữ khoá của dpkg từ lúc kiểm tra tới lúc gỡ xong, nên chương trình cập nhật tự động không chen vào làm sai kết quả xem trước.
 - Trong lúc đang gỡ, ứng dụng không cho thoát và xin hệ thống hoãn đăng xuất / ngủ; nếu cửa sổ vẫn bị đóng bất thường, helper tiếp tục chạy apt/dpkg tới cùng và ghi nhật ký vào `/var/log/tt-ubuntutools/`.
 - File trong thư mục người dùng (AppImage…) được chuyển vào **Thùng rác**; mục trong `/opt` bị xoá vĩnh viễn (có cảnh báo trước).
+- Phần mềm tự cài trong thư mục nhà: chỉ nhận ra những gì khớp **đúng mẫu** của một bản cài (file chạy ở `<thư mục>/`, `<thư mục>/bin/` hoặc `.venv/bin/`, là chương trình đã biên dịch / AppImage, không có `.git` hay mã nguồn, script khởi chạy dạng đơn giản…). Lối tắt trỏ vào dự án, dữ liệu hay runtime dùng chung của bạn chỉ được **liệt kê kèm lý do**, không bao giờ bị gỡ. Mặc định chỉ gỡ lối tắt, lệnh khởi chạy và biểu tượng; **thư mục chương trình chỉ vào Thùng rác khi bạn tự bật tuỳ chọn** sau khi xem danh sách nội dung của nó.
 
 > Công cụ gỡ phần mềm khỏi hệ thống. Hãy luôn đọc kỹ danh sách ở bước xem trước trước khi bấm **Gỡ cài đặt**.
 
@@ -28,10 +36,10 @@ Ubuntu **24.04 LTS trở lên** (libadwaita ≥ 1.5, GTK ≥ 4.12), Python 3.10+
 ## Cài đặt
 Tải file `tt-ubuntutools_<phiên bản>_all.deb` ở trang **Releases**, kiểm tra mã SHA-256 rồi cài:
 ```bash
-sha256sum -c tt-ubuntutools_1.0.0_all.deb.sha256
+sha256sum -c tt-ubuntutools_1.2.1_all.deb.sha256
 ```
 ```bash
-sudo apt install ./tt-ubuntutools_1.0.0_all.deb
+sudo apt install ./tt-ubuntutools_1.2.1_all.deb
 ```
 Sau khi cài, mở **TT_UbuntuTools** từ menu ứng dụng hoặc chạy `tt-ubuntutools`. Không chạy bằng `sudo`.
 
