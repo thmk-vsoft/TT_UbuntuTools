@@ -1466,5 +1466,359 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(recs[0]["freed_bytes"], 0)
 
 
+class DiskUsageTest(unittest.TestCase):
+    """Tab Dung lượng — đo, nhãn gợi ý, luật Thùng rác trên thư mục nhà giả."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        self.p = lambda *a: os.path.join(self.home, *a)
+
+    def tearDown(self):
+        for root, dirs, _files in os.walk(self.home):
+            for d in dirs:
+                try:
+                    os.chmod(os.path.join(root, d), 0o755)
+                except OSError:
+                    pass
+        self.tmp.cleanup()
+
+    def _write(self, rel, size):
+        path = self.p(rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(b"x" * size)
+        return path
+
+    def test_measure_counts_blocks_hardlinks_once_no_symlinks(self):
+        from tt_ubuntutools.diskusage.scanner import measure_dir
+        a = self._write("proj/a.bin", 100_000)
+        self._write("proj/sub/b.bin", 50_000)
+        os.link(a, self.p("proj/sub/a_link.bin"))
+        big = self._write("outside/big.bin", 400_000)
+        os.symlink(big, self.p("proj/link_to_big"))
+        os.symlink(self.p("outside"), self.p("proj/link_dir"))
+        m = measure_dir(self.p("proj"))
+        expect = sum(os.lstat(x).st_blocks * 512 for x in (self.p("proj"), self.p("proj/sub"), a,
+                                                           self.p("proj/sub/b.bin")))
+        self.assertEqual(m.size, expect)
+        self.assertEqual(m.files, 3)  # a, b, a_link (hardlink đếm file nhưng không cộng dung lượng lần 2)
+        self.assertEqual(m.dirs, 1)
+        self.assertEqual(m.errors, 0)
+        self.assertFalse(m.cancelled)
+
+    def test_measure_unreadable_and_cancel(self):
+        import threading
+        from tt_ubuntutools.diskusage.scanner import measure_dir
+        self._write("p/ok.bin", 10)
+        os.makedirs(self.p("p/locked"))
+        self._write("p/locked/secret.bin", 10)
+        os.chmod(self.p("p/locked"), 0)
+        if os.geteuid() != 0:
+            self.assertEqual(measure_dir(self.p("p")).errors, 1)
+        os.makedirs(self.p("many"))
+        for i in range(2500):
+            open(self.p("many", f"f{i}"), "w").close()
+        ev = threading.Event()
+        ev.set()
+        self.assertTrue(measure_dir(self.p("many"), ev).cancelled)
+        self.assertEqual(measure_dir(self.p("many")).files, 2500)
+
+    def test_list_dir(self):
+        from tt_ubuntutools.diskusage.scanner import list_dir
+        self._write("d/.hidden", 10)
+        self._write("d/visible.txt", 5000)
+        os.makedirs(self.p("d/sub"))
+        os.symlink(self.p("d/visible.txt"), self.p("d/ln"))
+        entries, err = list_dir(self.p("d"))
+        self.assertEqual(err, "")
+        by = {e.name: e for e in entries}
+        self.assertEqual(set(by), {".hidden", "visible.txt", "sub", "ln"})
+        self.assertTrue(by[".hidden"].hidden)
+        self.assertFalse(by["visible.txt"].hidden)
+        self.assertTrue(by["sub"].is_dir and by["sub"].size is None and not by["sub"].complete)
+        self.assertTrue(by["ln"].is_link and by["ln"].size == 0 and not by["ln"].is_dir)
+        self.assertEqual(by["visible.txt"].size, os.lstat(self.p("d/visible.txt")).st_blocks * 512)
+        self.assertEqual(list_dir(self.p("missing"))[0], [])
+        self.assertTrue(list_dir(self.p("missing"))[1])
+        root = {e.name: e for e in list_dir("/")[0]}
+        if "proc" in root:
+            self.assertTrue(root["proc"].other_device)
+
+    def test_cache_invalidate(self):
+        from tt_ubuntutools.diskusage.scanner import DiskUsageCache, Measure
+        c = DiskUsageCache()
+        for k in ("/a", "/a/b", "/a/b/c", "/a/bb", "/x", "/"):
+            c.put(k, Measure(size=1))
+        c.put("/cancelled", Measure(size=1, cancelled=True))
+        self.assertIsNone(c.get("/cancelled"))
+        c.invalidate("/a/b")
+        self.assertIsNone(c.get("/a/b"))
+        self.assertIsNone(c.get("/a/b/c"))
+        self.assertIsNone(c.get("/a"))   # thư mục cha: tổng đã đổi
+        self.assertIsNone(c.get("/"))
+        self.assertIsNotNone(c.get("/a/bb"))  # anh em có tiền tố giống không bị ảnh hưởng
+        self.assertIsNotNone(c.get("/x"))
+
+    def test_hints(self):
+        from tt_ubuntutools.cleanup import scanners as sc
+        from tt_ubuntutools.diskusage.hints import hint_for
+        h = self.home
+        for rel in (".cache/pip", ".cache/uv", ".npm/_cacache"):
+            self.assertEqual(hint_for(self.p(rel), True, home=h).level, sc.SAFE, rel)
+        self.assertEqual(hint_for(self.p(".cache"), True, home=h).level, sc.REVIEW)
+        self.assertEqual(hint_for(self.p(".cache/google-chrome"), True, home=h).link, "cleanup:browser")
+        for rel in (".config", ".ssh", ".gnupg", ".local/share", ".local/bin", "snap", ".var", ".mozilla",
+                    ".config/Code/User", ".ssh/id_ed25519"):
+            self.assertEqual(hint_for(self.p(rel), True, home=h).level, sc.LOCKED, rel)
+        self.assertEqual(hint_for(h, True, home=h).level, sc.LOCKED)
+        self.assertEqual(hint_for(self.p(".local/share/Trash"), True, home=h).level, sc.IRREVERSIBLE)
+        self.assertEqual(hint_for(self.p("Programs/App"), True, {self.p("Programs/App"): "App"}, h).link, "software")
+        # node_modules: chỉ gắn nhãn khi bộ nhận diện của Dọn dẹp xác nhận
+        os.makedirs(self.p("proj/node_modules"))
+        self.assertIsNone(hint_for(self.p("proj/node_modules"), True, home=h))
+        self._write("proj/package.json", 2)
+        self._write("proj/package-lock.json", 2)
+        old = sc.HOME
+        sc.HOME = h
+        try:
+            nm = hint_for(self.p("proj/node_modules"), True, home=h)
+        finally:
+            sc.HOME = old
+        self.assertEqual((nm.level, nm.link), (sc.REVIEW, "cleanup:project"))
+        self.assertEqual(hint_for(self.p("proj/__pycache__"), True, home=h).level, sc.SAFE)
+        self.assertIsNone(hint_for(self.p("Videos/film.mkv"), False, home=h))
+        self.assertIsNone(hint_for("/usr/lib", True, home=h))
+        self.assertEqual(hint_for("/var/cache/apt/archives", True, home=h).level, sc.SAFE)
+
+    def test_can_trash(self):
+        from tt_ubuntutools.diskusage.trash import can_trash
+        h = self.home
+        for d in ("Desktop", "Tải về", "Ảnh", ".config/app", ".ssh", ".gnupg", ".local/share/Trash/files",
+                  ".local/share/keyrings", ".local/share/Steam", ".cache/thumbnails", "snap/firefox", ".var/app/x",
+                  ".mozilla/firefox", "MyCode/proj/node_modules", "Programs/App"):
+            os.makedirs(self.p(d), exist_ok=True)
+        with open(self.p(".config/user-dirs.dirs"), "w") as fh:
+            fh.write('XDG_DOWNLOAD_DIR="$HOME/Tải về"\nXDG_PICTURES_DIR="$HOME/Ảnh"\n')
+        film = self._write("Tải về/film.mkv", 10)
+        self._write(".config/app/settings.json", 1)
+        self._write(".ssh/id_ed25519", 1)
+        os.symlink(self.p("MyCode"), self.p("ln_code"))
+        allowed = [film, self.p("MyCode/proj/node_modules"), self.p("MyCode/proj"), self.p(".cache/thumbnails"),
+                   self.p(".local/share/Steam"), self.p("Desktop"), self.p("ln_code")]
+        # Desktop chỉ được phép khi không phải thư mục XDG -> ở đây vẫn là tên mặc định -> bị chặn
+        allowed.remove(self.p("Desktop"))
+        for path in allowed:
+            self.assertEqual(can_trash(path, h), "", path)
+        blocked = [h, "/usr/bin", "/tmp", self.p("Tải về"), self.p("Ảnh"), self.p("Desktop"), self.p(".config"),
+                   self.p(".config/app"), self.p(".config/app/settings.json"), self.p(".ssh"), self.p(".ssh/id_ed25519"),
+                   self.p(".gnupg"), self.p(".local"), self.p(".local/share"), self.p(".local/share/Trash"),
+                   self.p(".local/share/Trash/files"), self.p(".local/share/keyrings"), self.p(".cache"),
+                   self.p("snap"), self.p("snap/firefox"), self.p(".var/app/x"), self.p(".mozilla/firefox"),
+                   self.p("missing"), self.p("MyCode/../MyCode/proj"), "relative/path", self.p("MyCode") + "/",
+                   self.p("ln_code/proj")]
+        for path in blocked:
+            self.assertNotEqual(can_trash(path, h), "", path)
+        self.assertNotEqual(can_trash(self.p("Programs/App"), h, locked_hint=True), "")
+        if os.geteuid() != 0:
+            os.chmod(self.p("MyCode/proj"), 0o555)
+            self.assertIn("quyền ghi", can_trash(self.p("MyCode/proj/node_modules"), h))
+            os.chmod(self.p("MyCode/proj"), 0o755)
+
+    def test_review_fixes_scanner(self):
+        from tt_ubuntutools.diskusage import scanner
+        from tt_ubuntutools.diskusage.scanner import DiskUsageCache, Measure, dedup_total, list_dir, measure_dir
+        c = DiskUsageCache()
+        for k in ("/", "/usr", "/usr/lib", "/home"):
+            c.put(k, Measure(size=1))
+        c.invalidate("/")
+        self.assertEqual([k for k in ("/", "/usr", "/usr/lib", "/home") if c.get(k)], [])
+        # liên kết cứng giữa các thư mục anh em: tổng khử trùng như du
+        big = self._write("t/a/big", 100_000)
+        os.makedirs(self.p("t/b"))
+        os.link(big, self.p("t/b/big2"))
+        os.link(big, self.p("t/top_link"))
+        entries = {e.name: e for e in list_dir(self.p("t"))[0]}
+        rows = []
+        for name, e in entries.items():
+            if e.is_dir:
+                m = measure_dir(e.path)
+                rows.append((m.size, m.links))
+            else:
+                rows.append((e.size, e.links))
+        whole = measure_dir(self.p("t"))
+        self.assertEqual(dedup_total(rows) + os.lstat(self.p("t")).st_blocks * 512, whole.size)
+        # mục biến mất giữa scandir và stat: bỏ qua, không phải lỗi
+        self._write("busy/keep", 10)
+        real_scandir = os.scandir
+
+        class Gone:
+            def __init__(self, e):
+                self.e = e
+                self.name, self.path = e.name, e.path
+
+            def stat(self, follow_symlinks=True):
+                raise FileNotFoundError(2, "gone")
+
+        class Wrap:
+            def __init__(self, it):
+                self.it = it
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self.it.close()
+
+            def __iter__(self):
+                for e in self.it:
+                    yield Gone(e)
+
+            def close(self):
+                self.it.close()
+
+        scanner.os.scandir = lambda p: Wrap(real_scandir(p))
+        try:
+            ents, err = list_dir(self.p("busy"))
+            m = measure_dir(self.p("busy"))
+        finally:
+            scanner.os.scandir = real_scandir
+        self.assertEqual((ents, err), ([], ""))
+        self.assertEqual(m.errors, 0)
+
+        # readdir ném lỗi giữa chừng: measure_dir không được ném ra ngoài
+        class Boom(Wrap):
+            def __iter__(self):
+                raise PermissionError(13, "readdir")
+                yield  # noqa
+
+        scanner.os.scandir = lambda p: Boom(real_scandir(p))
+        try:
+            m = measure_dir(self.p("busy"))
+        finally:
+            scanner.os.scandir = real_scandir
+        self.assertEqual(m.errors, 1)
+        # thư mục là điểm gắn (bind mount cùng ổ) không được đi vào
+        os.makedirs(self.p("mnt/inner"))
+        self._write("mnt/inner/x", 50_000)
+        m = measure_dir(self.p("mnt"), mounts={self.p("mnt/inner")})
+        self.assertEqual(m.files, 0)
+        self.assertTrue({e.name: e for e in list_dir(self.p("mnt"), {self.p("mnt/inner")})[0]}["inner"].other_device)
+
+    def test_review_fixes_trash(self):
+        from tt_ubuntutools.diskusage.hints import hint_for
+        from tt_ubuntutools.diskusage.trash import can_trash, xdg_dirs
+        h = self.home
+        for d in ("dotfiles/ssh", "dotfiles/gnupg", "sync/pass", "Data/Tài liệu", "Data/Music", "Data/other",
+                  "Apps/Foo", "..data", ".aws", ".config", "storage/Videos", "proj/.venv/bin", "proj2/.venv/bin"):
+            os.makedirs(self.p(d), exist_ok=True)
+        self._write("dotfiles/ssh/id_ed25519", 1)
+        os.symlink(self.p("dotfiles/ssh"), self.p(".ssh"))
+        os.symlink(self.p("dotfiles/gnupg"), self.p(".gnupg"))
+        os.symlink(self.p("sync/pass"), self.p(".password-store"))
+        os.symlink(self.p("storage/Videos"), self.p("Videos"))
+        with open(self.p(".config/user-dirs.dirs"), "w") as fh:
+            fh.write('# comment\nXDG_DOCUMENTS_DIR="$HOME/Data/Tài liệu"\n'
+                     'XDG_MUSIC_DIR="${HOME}/Data/Music"   # moved\nXDG_TEMPLATES_DIR="$HOME/"\n')
+        self.assertIn("Data/Music", xdg_dirs(h))
+        for path in ("dotfiles/ssh/id_ed25519", "dotfiles/ssh", "dotfiles", "dotfiles/gnupg", "sync/pass", "sync",
+                     "Data", "Data/Tài liệu", "Data/Music", "storage/Videos", "storage", ".aws"):
+            self.assertNotEqual(can_trash(self.p(path), h), "", path)
+        self.assertNotEqual(can_trash(self.p("Apps"), h, extra_protected=[self.p("Apps/Foo")]), "")
+        self.assertNotEqual(can_trash(self.p("Apps/Foo"), h, extra_protected=[self.p("Apps/Foo")]), "")
+        self.assertEqual(can_trash(self.p("Data/other"), h), "")
+        self.assertEqual(can_trash(self.p("..data"), h), "")
+        self.assertIsNotNone(hint_for(self.p(".aws"), True, home=h))
+        # venv: chỉ có liên kết sang Dọn dẹp khi Dọn dẹp thật sự dọn được
+        for v in ("proj/.venv", "proj2/.venv"):
+            with open(self.p(v, "pyvenv.cfg"), "w") as fh:
+                fh.write("home = /usr/bin\n")
+        self._write("proj/requirements.txt", 1)
+        os.makedirs(self.p("proj/.venv/lib"))
+        os.makedirs(self.p("proj2/.venv/lib"))
+        self.assertEqual(hint_for(self.p("proj/.venv"), True, home=h).link, "cleanup:project")
+        self.assertEqual(hint_for(self.p("proj2/.venv"), True, home=h).link, "")
+
+    def test_review_round2(self):
+        from tt_ubuntutools.diskusage import scanner
+        from tt_ubuntutools.diskusage.scanner import dedup_total, list_dir, measure_dir
+        from tt_ubuntutools.diskusage.trash import can_trash
+        # home là liên kết tượng trưng, user-dirs.dirs ghi theo đường dẫn liên kết
+        real = self.p("data/u")
+        os.makedirs(os.path.join(real, "Tài liệu"))
+        os.makedirs(os.path.join(real, ".config"))
+        os.makedirs(self.p("home"))
+        link = self.p("home/u")
+        os.symlink(real, link)
+        with open(os.path.join(real, ".config/user-dirs.dirs"), "w") as fh:
+            fh.write(f'XDG_DOCUMENTS_DIR="{link}/Tài liệu"\n')
+        self.assertNotEqual(can_trash(os.path.join(real, "Tài liệu"), real), "")
+        # thông tin đăng nhập Docker bị chặn, máy ảo Docker Desktop thì xoá được
+        os.makedirs(os.path.join(real, ".docker/desktop"))
+        with open(os.path.join(real, ".docker/config.json"), "w") as fh:
+            fh.write("{}")
+        self.assertNotEqual(can_trash(os.path.join(real, ".docker/config.json"), real), "")
+        self.assertEqual(can_trash(os.path.join(real, ".docker/desktop"), real), "")
+        # khối của chính liên kết tượng trưng được tính (như du)
+        os.makedirs(self.p("sl"))
+        os.symlink("x" * 200, self.p("sl/long"))
+        blocks = os.lstat(self.p("sl/long")).st_blocks * 512
+        self.assertEqual(measure_dir(self.p("sl")).size, os.lstat(self.p("sl")).st_blocks * 512 + blocks)
+        self.assertEqual({e.name: e for e in list_dir(self.p("sl"))[0]}["long"].size, blocks)
+        # vượt giới hạn liên kết cứng: vẫn giữ phần đã ghi để khử trùng
+        os.makedirs(self.p("hl/a"))
+        os.makedirs(self.p("hl/b"))
+        for i in range(5):
+            f = self._write(f"hl/a/f{i}", 5000)
+            os.link(f, self.p(f"hl/b/f{i}"))
+        old = scanner.MAX_LINKS
+        scanner.MAX_LINKS = 3
+        try:
+            ma, mb = measure_dir(self.p("hl/a")), measure_dir(self.p("hl/b"))
+        finally:
+            scanner.MAX_LINKS = old
+        self.assertEqual(len(ma.links), 3)
+        self.assertLess(dedup_total([(ma.size, ma.links), (mb.size, mb.links)]), ma.size + mb.size)
+
+    def test_review_round3(self):
+        from tt_ubuntutools.cleanup import scanners as sc
+        from tt_ubuntutools.diskusage.hints import hint_for
+        from tt_ubuntutools.diskusage.trash import can_trash, xdg_user_dirs
+        h = self.home
+        for d in (".docker/contexts/tls/abc", ".docker/machine/machines/dev", ".docker/certs.d/reg", ".docker/desktop",
+                  ".minikube/profiles/x", ".minikube/machines", ".config", "Docs$1", "back\\slash"):
+            os.makedirs(self.p(d), exist_ok=True)
+        for f in (".npmrc", ".pypirc", ".bashrc", ".gitconfig", ".docker/machine/machines/dev/id_rsa"):
+            self._write(f, 1)
+        for path in (".docker/contexts/tls", ".docker/contexts/tls/abc", ".docker/machine/machines/dev/id_rsa",
+                     ".docker/certs.d/reg", ".minikube/profiles/x", ".npmrc", ".pypirc", ".bashrc", ".gitconfig"):
+            self.assertNotEqual(can_trash(self.p(path), h), "", path)
+        self.assertEqual(hint_for(self.p(".docker/machine/machines/dev"), True, home=h).level, sc.LOCKED)
+        self.assertEqual(can_trash(self.p(".docker/desktop"), h), "")
+        self.assertEqual(can_trash(self.p(".minikube/machines"), h), "")
+        # giá trị XDG có ký tự thoát kiểu shell (như xdg-user-dirs-update ghi)
+        with open(self.p(".config/user-dirs.dirs"), "w") as fh:
+            fh.write('XDG_DESKTOP_DIR="$HOME/Docs\\$1"\nXDG_MUSIC_DIR="$HOME/back\\\\slash"\n')
+        dirs = xdg_user_dirs(h)
+        self.assertEqual(dirs["DESKTOP"], self.p("Docs$1"))
+        self.assertEqual(dirs["MUSIC"], self.p("back\\slash"))
+        self.assertNotEqual(can_trash(self.p("Docs$1"), h), "")
+        self.assertNotEqual(can_trash(self.p("back\\slash"), h), "")
+
+    def test_disk_history_record(self):
+        rec = history.make_disk_record("/home/u/Videos/big.mkv", 5_000_000, None, True)
+        self.assertEqual((rec["source"], rec["source_label"], rec["trashed_bytes"], rec["freed_bytes"]),
+                         ("disk", "Dung lượng", 5_000_000, 0))
+        self.assertTrue(rec["success"])
+        bad = history.make_disk_record("/home/u/x", 10, 1, False, "Permission denied")
+        self.assertFalse(bad["success"])
+        self.assertEqual(bad["trashed_bytes"], 0)
+        self.assertIn("Permission denied", bad["message"])
+        back = history.make_disk_record("/home/u/x", None, None, True, restored=True)
+        self.assertTrue(back["success"])
+        self.assertEqual(back["trashed_bytes"], 0)
+        self.assertIn("Khôi phục", back["name"])
+
+
 if __name__ == "__main__":
     unittest.main()

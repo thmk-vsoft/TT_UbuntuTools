@@ -586,6 +586,14 @@ class CleanupView(Gtk.Box):
         self._refresh_view()
         self._update_selection()
 
+    def select_group(self, code: str):
+        """Chọn nhóm ở thanh bên (dùng khi bấm "Mở ở tab Dọn dẹp" từ tab Dung lượng)."""
+        row = self.group_rows.get(code) or self.group_rows["all"]
+        if not row.get_visible():
+            row = self.group_rows["all"]
+        self.groups.select_row(row)
+        self.split.set_show_content(True)
+
     def _on_search(self, entry):
         self.query = entry.get_text().strip().casefold()
         self._refresh_view()

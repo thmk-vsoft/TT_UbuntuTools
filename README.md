@@ -18,6 +18,13 @@ Công cụ đồ hoạ (GTK4 / libadwaita) để **thống kê phần mềm đã
   - ⚪ **Bị khoá** (kèm lý do): thư mục bên trong ứng dụng (`~/.vscode`, `~/.config`…), `node_modules` không có lockfile, `.venv` không có `requirements.txt` / `pyproject.toml`, môi trường của chương trình đã cài, trình duyệt đang mở, thư mục đang được chương trình chạy dùng.
   Thư mục dự án được xoá vĩnh viễn để giải phóng chỗ ngay; mỗi đường dẫn được kiểm tra lại ngay trước khi xoá. Việc cần quyền quản trị (snap cũ, apt, journal) đi qua helper và chỉ hỏi mật khẩu một lần.
 
+- **Dung lượng** (Ctrl+3): xem thư mục / file nào chiếm nhiều chỗ, giống trình quản lý file:
+  - Lối tắt Thư mục nhà · Màn hình nền · Tài liệu · Tải về · Toàn bộ ổ đĩa (`/`) · Chọn thư mục…; thanh dung lượng ổ đĩa.
+  - Bảng: tên, **tỉ lệ %** (so với thư mục đang xem, có thanh màu), dung lượng, số file, ngày sửa; hiện cả **mục ẩn** (bật/tắt được); nhấn đúp để vào trong, Backspace / Alt+← để lên.
+  - Dung lượng được tính dần khi mở từng thư mục (dung lượng thật trên đĩa như `du`, không đi theo liên kết tượng trưng, không sang ổ khác), nhớ trong phiên; ⟳ để quét lại.
+  - Nhãn gợi ý theo 4 mức an toàn của mục Dọn dẹp, kèm nút **Mở ở tab Dọn dẹp**.
+  - **Chuyển vào Thùng rác** (có Hoàn tác): chỉ trong thư mục nhà; không cho xoá chính thư mục nhà, các thư mục người dùng (Tài liệu, Tải về…), `.config`, `.ssh`, `.gnupg`, `.local`, `.cache`, `snap`, `.var`, hồ sơ trình duyệt… và mọi thứ bên trong thư mục cấu hình / khoá bảo mật. Ngoài thư mục nhà chỉ để xem.
+
 ## An toàn
 - **Luật bảo vệ** chặn gỡ: gói Essential / required / important; kernel đang chạy và gói kernel chính; bootloader, công cụ initramfs (dracut, initramfs-tools), công cụ ổ đĩa (cryptsetup, lvm2, mdadm, zfs, btrfs); firmware; mạng; desktop và màn hình đăng nhập của GNOME, KDE, Xfce, LXQt, MATE, Cinnamon, Budgie; trình đăng nhập và các phiên desktop đã cài trên chính máy bạn; polkit agent đang chạy; SSH / RDP / chia sẻ màn hình GNOME khi dịch vụ đó đang bật hoặc đang có phiên điều khiển từ xa; nền tảng snap (snapd, apparmor); snap nền / snap dùng chung; thư mục runtime của dịch vụ và chương trình đang được dịch vụ systemd dùng.
 - Purge các phần mềm máy chủ có dữ liệu (PostgreSQL, MySQL/MariaDB, Docker…) bị chặn để tránh mất dữ liệu.
@@ -36,10 +43,10 @@ Ubuntu **24.04 LTS trở lên** (libadwaita ≥ 1.5, GTK ≥ 4.12), Python 3.10+
 ## Cài đặt
 Tải file `tt-ubuntutools_<phiên bản>_all.deb` ở trang **Releases**, kiểm tra mã SHA-256 rồi cài:
 ```bash
-sha256sum -c tt-ubuntutools_1.2.1_all.deb.sha256
+sha256sum -c tt-ubuntutools_1.3.0_all.deb.sha256
 ```
 ```bash
-sudo apt install ./tt-ubuntutools_1.2.1_all.deb
+sudo apt install ./tt-ubuntutools_1.3.0_all.deb
 ```
 Sau khi cài, mở **TT_UbuntuTools** từ menu ứng dụng hoặc chạy `tt-ubuntutools`. Không chạy bằng `sudo`.
 
@@ -65,6 +72,8 @@ python3 -m unittest discover -s tests -t .
 ## Cấu trúc
 - `tt_ubuntutools/collectors/` — mỗi nguồn cài đặt một bộ thu thập
 - `tt_ubuntutools/removal/` — lập kế hoạch gỡ, luật bảo vệ, luật đường dẫn, chạy gỡ
+- `tt_ubuntutools/cleanup/` — quét và lập kế hoạch dọn dẹp
+- `tt_ubuntutools/diskusage/` — đo dung lượng, nhãn gợi ý, luật chuyển vào Thùng rác của tab Dung lượng
 - `tt_ubuntutools/ui/` — giao diện (kèm phần Đóng góp dự án theo DonateKit)
 - `helper/tt-ubuntutools-helper` — helper chạy bằng quyền root qua pkexec
 - `data/` — file `.desktop`, biểu tượng, polkit policy

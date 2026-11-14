@@ -10,6 +10,7 @@ from .. import APP_NAME
 from ..collectors import CollectResult, collect_all
 from ..models import RemovalResult, SoftwareItem, Source, human_size
 from .cleanup_view import CleanupView
+from .disk_view import DiskView
 from .common import SOURCE_ICONS, ScopeSwitcher, SectionSwitcher, make_spinner, make_toast
 from .donate import donate_button
 from .details_pane import DetailsPane
@@ -45,7 +46,7 @@ class SidebarRow(Gtk.ListBoxRow):
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application):
         super().__init__(application=app, title=APP_NAME, default_width=1320, default_height=820)
-        self.set_size_request(500, 400)  # thanh trên cùng (2 thẻ + nút cửa sổ) cần ~483 px
+        self.set_size_request(620, 400)  # thanh trên cùng (3 thẻ + nút cửa sổ) cần ~605 px ở mốc hẹp nhất
         self.result: CollectResult | None = None
         self._loading = False
         self._reload_pending = False
@@ -64,6 +65,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.cleanup_view.connect("run-requested", lambda _v, items: self.run_cleanup(items))
         self.cleanup_view.connect("summary-changed", self._on_cleanup_summary)
         self.sections.add_named(self.cleanup_view, "cleanup")
+        self.disk_view = DiskView()
+        self.disk_view.connect("link-requested", lambda _v, link: self.follow_link(link))
+        self.disk_view.connect("toast", lambda _v, t: self.toasts.add_toast(t))
+        self.sections.add_named(self.disk_view, "disk")
         outer.set_content(self.sections)
         self.toasts.set_child(outer)
         self.set_content(self.toasts)
@@ -77,7 +82,7 @@ class MainWindow(Adw.ApplicationWindow):
         cv = self.cleanup_view
 
         def details(bp):
-            for ds in (self.details_split, cv.details_split):
+            for ds in (self.details_split, cv.details_split, self.disk_view.details_split):
                 bp.add_setter(ds, "collapsed", True)
                 bp.add_setter(ds, "show-sidebar", False)
 
@@ -99,9 +104,15 @@ class MainWindow(Adw.ApplicationWindow):
         compact(bp3)
         bp3.add_setter(self.split, "collapsed", True)
         bp3.add_setter(cv.split, "collapsed", True)
+        bp3.add_setter(self.disk_view.split, "collapsed", True)
+        bp3.add_setter(self.disk_view.share_bar, "visible", False)
+        for lbl in self.section_switcher.sub_labels():
+            bp3.add_setter(lbl, "visible", False)
         bp3.add_setter(self._app_name, "visible", False)
         self.add_breakpoint(bp3)
         self._setup_actions()
+        app.connect("shutdown", lambda *_: self.disk_view.shutdown())  # cả khi thoát bằng Ctrl+Q
+        self.section_switcher.set_sub("disk", self.disk_view.free_text())
         self.reload()
         # Quét Dọn dẹp ngầm (chỉ đọc) sau khi danh sách phần mềm bắt đầu tải — để thẻ hiện số GB có thể dọn.
         GLib.timeout_add(1500, lambda: (self.cleanup_view.scan(), False)[1])
@@ -114,14 +125,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.top_header.pack_start(self._app_name)
         self.section_switcher = SectionSwitcher([
             ("software", "system-software-install-symbolic", "Gỡ cài đặt", "Phần mềm đã cài — xem và gỡ"),
-            ("cleanup", "edit-clear-all-symbolic", "Dọn dẹp", "Dữ liệu thừa có thể dọn (Ctrl+K)"),
+            ("cleanup", "edit-clear-all-symbolic", "Dọn dẹp", "Dữ liệu thừa có thể dọn (Ctrl+2 / Ctrl+K)"),
+            ("disk", "drive-harddisk-symbolic", "Dung lượng", "Thư mục / file nào chiếm nhiều chỗ (Ctrl+3)"),
         ], "software")
         self.section_switcher.connect("changed", lambda _s, n: self.show_section(n))
         self.top_header.set_title_widget(self.section_switcher)
         menu = Gio.Menu()
         menu.append("Gỡ cài đặt", "win.section-software")
         menu.append("Dọn dẹp", "app.cleanup")
-        menu.append("Lịch sử gỡ cài đặt & dọn dẹp", "app.history")
+        menu.append("Dung lượng", "win.section-disk")
+        menu.append("Lịch sử gỡ cài đặt, dọn dẹp & xoá", "app.history")
         menu.append("Làm mới", "win.refresh")
         menu.append("Giới thiệu", "app.about")
         self.top_header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, tooltip_text="Menu"))
@@ -136,6 +149,17 @@ class MainWindow(Adw.ApplicationWindow):
             self.section_switcher.set_active_name(name)
         if name == "cleanup" and not self.cleanup_view.scanned and not self.cleanup_view.scanning:
             self.cleanup_view.scan()
+        if name == "disk":
+            self.disk_view.ensure_opened()
+            self.section_switcher.set_sub("disk", self.disk_view.free_text())
+
+    def follow_link(self, link: str):
+        """Nút "Mở ở tab Dọn dẹp" / "Gỡ ở tab Gỡ cài đặt" từ tab Dung lượng."""
+        if link.startswith("cleanup"):
+            self.show_section("cleanup")
+            self.cleanup_view.select_group(link.partition(":")[2] or "all")
+        elif link == "software":
+            self.show_section("software")
 
     def _on_cleanup_summary(self, _v, totals):
         safe, review, failed = totals
@@ -241,20 +265,30 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _setup_actions(self):
         refresh = Gio.SimpleAction.new("refresh", None)
-        refresh.connect("activate", lambda *_: self.cleanup_view.scan()
-                        if self.sections.get_visible_child_name() == "cleanup" else self.reload())
+        refresh.connect("activate", lambda *_: self._refresh_current())
         self.add_action(refresh)
         focus = Gio.SimpleAction.new("search", None)
-        focus.connect("activate", lambda *_: (self.cleanup_view.search if self.sections.get_visible_child_name()
-                                              == "cleanup" else self.search).grab_focus())
+        focus.connect("activate", lambda *_: {"cleanup": self.cleanup_view.search, "disk": self.disk_view.search}
+                      .get(self.sections.get_visible_child_name(), self.search).grab_focus())
         self.add_action(focus)
         app = self.get_application()
         app.set_accels_for_action("win.refresh", ["F5", "<Control>r"])
         app.set_accels_for_action("win.search", ["<Control>f"])
-        sec = Gio.SimpleAction.new("section-software", None)
-        sec.connect("activate", lambda *_: self.show_section("software"))
-        self.add_action(sec)
-        app.set_accels_for_action("win.section-software", ["<Control>1"])
+        for i, name in enumerate(("software", "cleanup", "disk"), 1):
+            sec = Gio.SimpleAction.new(f"section-{name}", None)
+            sec.connect("activate", lambda *_a, n=name: self.show_section(n))
+            self.add_action(sec)
+            app.set_accels_for_action(f"win.section-{name}", [f"<Control>{i}"])
+
+    def _refresh_current(self):
+        cur = self.sections.get_visible_child_name()
+        if cur == "cleanup":
+            self.cleanup_view.scan()
+        elif cur == "disk":
+            self.disk_view.rescan()
+            self.section_switcher.set_sub("disk", self.disk_view.free_text())
+        else:
+            self.reload()
 
     # =================== Dữ liệu ===================
     def reload(self, keep_key: str | None = None):
@@ -367,6 +401,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.toasts.add_toast(make_toast("Đã gỡ xong — đang làm mới danh sách", 4))
         else:
             self.toasts.add_toast(make_toast("Gỡ không thành công: " + result.message, 6))
+        self.disk_view.invalidate_all()
+        self.section_switcher.set_sub("disk", self.disk_view.free_text())
         self.reload()
 
     def open_cleanup(self):
@@ -379,6 +415,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.toasts.add_toast(make_toast("Đã dọn dẹp xong — đang quét lại" if result.success
                                          else "Dọn dẹp chưa xong: " + result.message[:160], 5))
         self.cleanup_view.scan()
+        self.disk_view.invalidate_all()  # dung lượng đã đổi
+        self.section_switcher.set_sub("disk", self.disk_view.free_text())
         self.reload()
 
     def _on_close_request(self, *_):
@@ -387,4 +425,5 @@ class MainWindow(Adw.ApplicationWindow):
         if app is not None and getattr(app, "busy", 0):
             self.toasts.add_toast(make_toast("Đang gỡ cài đặt — vui lòng đợi xong rồi hãy đóng.", 4))
             return True
+        self.disk_view.shutdown()
         return False

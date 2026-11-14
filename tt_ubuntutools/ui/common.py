@@ -129,6 +129,10 @@ CSS = """
 .section-tabs > button.section-tab:checked { background: alpha(@accent_bg_color, 0.18); }
 
 .summary-bar { padding: 6px 12px; }
+/* Tab Dung lượng: thanh tỉ lệ trong bảng */
+progressbar.du-bar > trough { min-width: 30px; min-height: 8px; border-radius: 4px; }
+progressbar.du-bar > trough > progress { min-height: 8px; border-radius: 4px; background: @accent_bg_color; }
+.crumb-bar button { padding: 2px 6px; min-height: 26px; }
 .protected-box {
   background: alpha(@warning_bg_color, 0.18);
   border-radius: 12px;
@@ -198,6 +202,7 @@ class SectionSwitcher(Gtk.Box):
         self._active = active
         self._subs: dict[str, Gtk.Label] = {}
         self._btns: dict[str, Gtk.ToggleButton] = {}
+        self._wraps: list[Gtk.Box] = []
         first = None
         for name, icon, label, tip in sections:
             b = Gtk.ToggleButton(tooltip_text=tip)
@@ -213,8 +218,11 @@ class SectionSwitcher(Gtk.Box):
             sub.add_css_class("caption")
             sub.add_css_class("dim-label")
             sub.set_visible(False)
+            wrap = Gtk.Box()  # mốc co giãn ẩn hộp này; set_sub chỉ điều khiển nhãn bên trong
+            wrap.append(sub)
             v.append(t)
-            v.append(sub)
+            v.append(wrap)
+            self._wraps.append(wrap)
             box.append(v)
             b.set_child(box)
             if first is None:
@@ -238,6 +246,10 @@ class SectionSwitcher(Gtk.Box):
 
     def get_active_name(self) -> str:
         return self._active
+
+    def sub_labels(self) -> list[Gtk.Box]:
+        """Hộp chứa dòng phụ của từng thẻ — để mốc co giãn ẩn đi khi cửa sổ hẹp."""
+        return list(self._wraps)
 
     def set_sub(self, name: str, text: str):
         lbl = self._subs.get(name)

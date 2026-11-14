@@ -58,6 +58,49 @@ def make_cleanup_record(cplan, result: RemovalResult, freed: int, skipped=(), wh
     return {k: _clean(v) for k, v in rec.items()}
 
 
+def make_disk_record(path: str, size: int | None, files: int | None, ok: bool, message: str = "",
+                     when: dt.datetime | None = None, restored: bool = False) -> dict:
+    """Bản ghi cho một lần "Chuyển vào Thùng rác" (hoặc Hoàn tác — restored=True) từ tab Dung lượng."""
+    name = os.path.basename(path.rstrip("/")) or path
+    if restored:
+        rec = {
+            "time": (when or dt.datetime.now()).isoformat(timespec="seconds"),
+            "name": f"Khôi phục từ Thùng rác: {name}",
+            "id": "disk", "source": "disk", "source_label": "Dung lượng", "version": "",
+            "purge": False, "autoremove": False, "option_labels": ["Hoàn tác"], "kept": [],
+            "affected": [path], "freed_bytes": 0, "trashed_bytes": 0, "partial": False,
+            "completed": [path] if ok else [], "success": bool(ok), "verified": None,
+            "exit_code": 0 if ok else 1,
+            "message": "Đã khôi phục về vị trí cũ" if ok else f"Không khôi phục được: {message}",
+            "log_tail": "",
+        }
+        return {k: _clean(v) for k, v in rec.items()}
+    rec = {
+        "time": (when or dt.datetime.now()).isoformat(timespec="seconds"),
+        "name": f"Chuyển vào Thùng rác: {name}",
+        "id": "disk",
+        "source": "disk",
+        "source_label": "Dung lượng",
+        "version": "",
+        "purge": False,
+        "autoremove": False,
+        "option_labels": ["Thùng rác"],
+        "kept": [],
+        "affected": [path],
+        "freed_bytes": 0,
+        "trashed_bytes": int(size or 0) if ok else 0,
+        "partial": False,
+        "completed": [path] if ok else [],
+        "success": bool(ok),
+        "verified": None,
+        "exit_code": 0 if ok else 1,
+        "message": ("Đã chuyển vào Thùng rác"
+                    + (f" ({files} file)" if files is not None else "")) if ok else f"Không chuyển được: {message}",
+        "log_tail": "",
+    }
+    return {k: _clean(v) for k, v in rec.items()}
+
+
 def make_record(plan: RemovalPlan, result: RemovalResult, when: dt.datetime | None = None) -> dict:
     item = plan.item
     rec = {

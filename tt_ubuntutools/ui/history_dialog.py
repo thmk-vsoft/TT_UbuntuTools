@@ -19,7 +19,7 @@ def _fmt_time(s: str) -> str:
 
 class HistoryDialog(Adw.Dialog):
     def __init__(self):
-        super().__init__(title="Lịch sử gỡ cài đặt & dọn dẹp", content_width=640, content_height=620)
+        super().__init__(title="Lịch sử gỡ cài đặt, dọn dẹp & xoá", content_width=640, content_height=620)
         tv = Adw.ToolbarView()
         header = Adw.HeaderBar()
         self.clear_btn = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Xoá lịch sử")
@@ -62,7 +62,7 @@ class HistoryDialog(Adw.Dialog):
                           if r.get("success") or (r.get("source") == "cleanup" and r.get("partial")))
         ok = sum(1 for r in records if r.get("success"))
         self.group = Adw.PreferencesGroup(
-            title=f"{len(records)} lần gỡ / dọn dẹp",
+            title=f"{len(records)} lần gỡ / dọn dẹp / xoá",
             description=f"{ok} thành công, {len(records) - ok} thất bại · đã giải phóng {human_size(total_freed)}")
         self.page.add(self.group)
         for r in records:
@@ -73,7 +73,9 @@ class HistoryDialog(Adw.Dialog):
                     f"{_fmt_time(r.get('time'))} · "
                     + ("Thành công" if success else ("Một phần" if r.get("partial") else "Thất bại"))
                     + (f" · giải phóng {human_size(r.get('freed_bytes'))}"
-                       if (success or r.get("partial")) and r.get("freed_bytes") else "")),
+                       if (success or r.get("partial")) and r.get("freed_bytes") else "")
+                    + (f" · {human_size(r.get('trashed_bytes'))} vào Thùng rác"
+                       if success and r.get("source") == "disk" and r.get("trashed_bytes") else "")),
             )
             icon = Gtk.Image.new_from_icon_name("emblem-ok-symbolic" if success else "dialog-error-symbolic")
             icon.add_css_class("success" if success else "error")

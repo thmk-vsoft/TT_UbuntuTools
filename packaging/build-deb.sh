@@ -40,6 +40,17 @@ install -m 0644 "$ROOT/LICENSE" "$DOC/copyright"
 cat > "$STAGE/changelog.tmp" <<EOF
 $PKG ($VERSION) unstable; urgency=medium
 
+  * Tab mới "Dung lượng" (Ctrl+3): duyệt thư mục như trình quản lý file, xem
+    dung lượng và tỉ lệ % của từng thư mục / file (kể cả mục ẩn), tính dần khi
+    mở từng thư mục. Nhãn gợi ý theo 4 mức an toàn, nút "Mở ở tab Dọn dẹp".
+  * Chuyển mục lớn vào Thùng rác (chỉ trong thư mục nhà, chặn thư mục quan
+    trọng, có Hoàn tác), ghi vào lịch sử.
+  * Phím tắt Ctrl+1 / Ctrl+2 / Ctrl+3 cho ba khu vực.
+
+ -- THMK V-Soft <ttvn92i2026@gmail.com>  $(LC_ALL=C date -R)
+
+$PKG (1.2.1) unstable; urgency=medium
+
   * Bố cục lại: hai khu vực ngang hàng "Gỡ cài đặt" / "Dọn dẹp" ở đầu cửa sổ,
     cùng kiểu 3 cột (nhóm · bảng · chi tiết).
   * Bỏ dải nhắc dọn dẹp; bảng Dọn dẹp gọn lại (cột "Ngày sửa"), không còn
