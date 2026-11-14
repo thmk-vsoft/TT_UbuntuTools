@@ -367,10 +367,14 @@ def git_tracked_inside(path: str) -> str:
     if not git:
         return "dự án dùng git nhưng không có lệnh git để kiểm tra file được theo dõi"
     try:
-        res = subprocess.run([git, "-C", top, "ls-files", "-z", "--", os.path.relpath(path, top)],
+        # -c ... ghi đè cấu hình trong .git/config của repo: repo tải về không được chạy lệnh qua fsmonitor / hooks
+        res = subprocess.run([git, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+                              "-c", "core.untrackedCache=false", "-C", top, "ls-files", "-z", "--",
+                              os.path.relpath(path, top)],
                              capture_output=True, timeout=15, stdin=subprocess.DEVNULL,
                              env={"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "HOME": HOME,
-                                  "GIT_CONFIG_NOSYSTEM": "1", "GIT_LITERAL_PATHSPECS": "1"})
+                                  "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                                  "GIT_LITERAL_PATHSPECS": "1"})
     except (OSError, subprocess.TimeoutExpired):
         return "không hỏi được git về các file được theo dõi"
     if res.returncode != 0:

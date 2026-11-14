@@ -11,7 +11,8 @@ import subprocess
 import threading
 import time
 
-C_ENV = {**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"}
+C_ENV = {**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8",
+         "NPM_CONFIG_UPDATE_NOTIFIER": "false"}  # npm không tự kết nối registry để kiểm tra bản mới
 
 # python-apt dùng trạng thái toàn cục — chỉ một luồng mở apt.Cache tại một thời điểm.
 APT_LOCK = threading.Lock()
@@ -25,6 +26,7 @@ def clean_env(extra: dict | None = None) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith(UNSAFE_ENV_PREFIXES)}
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
     env["LC_ALL"] = env["LANG"] = "C.UTF-8"
+    env["NPM_CONFIG_UPDATE_NOTIFIER"] = "false"  # npm không tự kết nối registry để kiểm tra bản mới
     if extra:
         env.update(extra)
     return env

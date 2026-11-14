@@ -46,7 +46,7 @@ DENY_NAMES = {
     "flatpak", "snap", "pipx", "uv", "pnpm", "node_modules", "containers", "keyrings", "gnome-shell",
     "nautilus", "gvfs-metadata", "dbus-1", "evolution", "tracker", "tracker3", "kio", "kservices5",
     "pki", "icc", "ibus-table", "yelp", "recently-used.xbel", "user-session-migration", "systemd",
-    "gnome-settings-daemon", "desktop-directories", "xorg", "zeitgeist", "webkitgtk", "tt-ubuntutools",
+    "gnome-settings-daemon", "desktop-directories", "xorg", "zeitgeist", "webkitgtk", "tt-desktoptool", "tt-ubuntutools",
     "virtualenv", "virtualenvs", "venv", "venvs", "envs", "pyenv", "nvm", "rustup", "cargo", "go", "gem",
     "Steam", "JetBrains", "AppImages", "applications-merged", "wine", "lutris", "bottles", "Google",
     "Mozilla", "mozilla", "conda", "mamba", "micromamba",

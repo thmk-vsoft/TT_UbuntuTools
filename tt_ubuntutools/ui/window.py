@@ -6,7 +6,7 @@ import threading
 
 from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
-from .. import APP_NAME
+from .. import APP_NAME, VERSION
 from ..collectors import CollectResult, collect_all
 from ..models import RemovalResult, SoftwareItem, Source, human_size
 from .cleanup_view import CleanupView
@@ -45,7 +45,7 @@ class SidebarRow(Gtk.ListBoxRow):
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application):
-        super().__init__(application=app, title=APP_NAME, default_width=1320, default_height=820)
+        super().__init__(application=app, title=f"{APP_NAME} {VERSION}", default_width=1320, default_height=820)
         self.set_size_request(620, 400)  # thanh trên cùng (3 thẻ + nút cửa sổ) cần ~605 px ở mốc hẹp nhất
         self.result: CollectResult | None = None
         self._loading = False
@@ -78,7 +78,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Mốc co giãn: Adw chỉ áp dụng MỘT mốc (mốc thêm sau cùng còn khớp), nên mỗi mốc mang đủ mọi thay đổi
         # cho khoảng của nó. 1150: thu khung chi tiết · 1000: + nút Đóng góp chỉ còn trái tim, nút chọn thành biểu
-        # tượng · 760: + thu thanh bên, ẩn tên app ở thanh trên.
+        # tượng · 790: + thu thanh bên, ẩn tên app ở thanh trên.
         cv = self.cleanup_view
 
         def details(bp):
@@ -99,7 +99,7 @@ class MainWindow(Adw.ApplicationWindow):
         details(bp2)
         compact(bp2)
         self.add_breakpoint(bp2)
-        bp3 = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 760sp"))
+        bp3 = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 790sp"))
         details(bp3)
         compact(bp3)
         bp3.add_setter(self.split, "collapsed", True)
@@ -116,11 +116,20 @@ class MainWindow(Adw.ApplicationWindow):
         self.reload()
         # Quét Dọn dẹp ngầm (chỉ đọc) sau khi danh sách phần mềm bắt đầu tải — để thẻ hiện số GB có thể dọn.
         GLib.timeout_add(1500, lambda: (self.cleanup_view.scan(), False)[1])
+        GLib.timeout_add(300, self._maybe_welcome)
+
+    def _maybe_welcome(self):
+        """Màn hình chào lần đầu (tới khi người dùng chọn "Không hiện lại")."""
+        from .welcome import WelcomeDialog, should_show
+
+        if should_show() and self.get_visible():
+            WelcomeDialog(self).present(self)
+        return False
 
     # =================== Thanh trên cùng: hai khu vực ===================
     def _build_top_header(self):
         self.top_header = Adw.HeaderBar()
-        self._app_name = Gtk.Label(label=APP_NAME, margin_start=6)
+        self._app_name = Gtk.Label(label=f"{APP_NAME} {VERSION}", margin_start=6)
         self._app_name.add_css_class("heading")
         self.top_header.pack_start(self._app_name)
         self.section_switcher = SectionSwitcher([

@@ -25,7 +25,7 @@ from tt_ubuntutools.removal.protection import apt_reason, check_apt_removal, shi
 from tt_ubuntutools.utils import _unescape_mount, dir_size, display, mounts_under, snap_content_providers
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HELPER_PATH = os.path.join(ROOT, "helper", "tt-ubuntutools-helper")
+HELPER_PATH = os.path.join(ROOT, "helper", "tt-desktoptool-helper")
 
 
 def load_helper():
@@ -114,7 +114,7 @@ class ProtectionTest(unittest.TestCase):
     def test_apt(self):
         self.assertTrue(apt_reason("coreutils", essential=True))
         self.assertTrue(apt_reason("cron", priority="important"))
-        for n in ["gnome-shell", "systemd-resolved", "ubuntu-desktop-minimal", "tt-ubuntutools",
+        for n in ["gnome-shell", "systemd-resolved", "ubuntu-desktop-minimal", "tt-desktoptool",
                   "linux-image-" + os.uname().release, "dracut", "dracut-core", "initramfs-tools",
                   "firmware-sof-signed", "linux-firmware", "intel-microcode", "cryptsetup-initramfs", "lvm2",
                   "sddm", "lightdm", "kubuntu-desktop", "xubuntu-desktop", "plasma-workspace", "xfce4-session",
@@ -1818,6 +1818,90 @@ class DiskUsageTest(unittest.TestCase):
         self.assertTrue(back["success"])
         self.assertEqual(back["trashed_bytes"], 0)
         self.assertIn("Khôi phục", back["name"])
+
+
+class ReleaseHardeningTest(unittest.TestCase):
+    """Các bản sửa của lượt rà soát trước phát hành 1.4.0."""
+
+    def test_helper_log_dir_not_followed(self):
+        h = load_helper()
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "victim")
+            os.makedirs(target)
+            link = os.path.join(d, "logdir")
+            os.symlink(target, link)
+            old = h.LOG_DIR
+            h.LOG_DIR = link
+            try:
+                out = h.Out()
+                out._open_log()
+            finally:
+                h.LOG_DIR = old
+            self.assertEqual(out.log, -1)
+            self.assertEqual(os.listdir(target), [])  # không tạo tệp qua liên kết tượng trưng
+
+    def test_git_repo_config_cannot_run_commands(self):
+        import shutil
+        import subprocess
+        from tt_ubuntutools.cleanup import scanners as sc
+        if not shutil.which("git"):
+            self.skipTest("không có git")
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "node_modules"))
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            marker = os.path.join(d, "PWNED")
+            subprocess.run(["git", "-C", repo, "config", "core.fsmonitor", f"touch {marker}; false"], check=True)
+            sc.git_tracked_inside(os.path.join(repo, "node_modules"))
+            self.assertFalse(os.path.exists(marker))
+
+    def test_history_private_and_settings(self):
+        from tt_ubuntutools import settings
+        with tempfile.TemporaryDirectory() as d:
+            hp = os.path.join(d, "h", "history.jsonl")
+            history.append({"name": "x"}, hp)
+            self.assertEqual(os.stat(hp).st_mode & 0o777, 0o600)
+            sp = os.path.join(d, "cfg", "settings.json")
+            self.assertFalse(settings.get("welcome_shown", False, sp))
+            self.assertTrue(settings.set_value("welcome_shown", True, sp))
+            self.assertTrue(settings.get("welcome_shown", False, sp))
+            with open(sp, "w") as fh:
+                fh.write("{hỏng")
+            self.assertEqual(settings.load(sp), {})
+
+    def test_npm_update_notifier_off(self):
+        from tt_ubuntutools.utils import C_ENV, clean_env
+        self.assertEqual(C_ENV["NPM_CONFIG_UPDATE_NOTIFIER"], "false")
+        self.assertEqual(clean_env()["NPM_CONFIG_UPDATE_NOTIFIER"], "false")
+
+
+class RenameTransitionTest(unittest.TestCase):
+    """Đổi tên TT_UbuntuTools -> TT_DesktopTool (1.4.0)."""
+
+    def test_old_package_still_protected(self):
+        self.assertTrue(apt_reason("tt-ubuntutools"))
+        self.assertTrue(apt_reason("tt-desktoptool"))
+
+    def test_history_migrates_from_old_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = os.path.join(d, "tt-ubuntutools", "history.jsonl")
+            os.makedirs(os.path.dirname(old))
+            with open(old, "w") as fh:
+                fh.write('{"name": "cu"}\n')
+            env = os.environ.get("XDG_DATA_HOME")
+            os.environ["XDG_DATA_HOME"] = d
+            try:
+                path = history.history_path()
+                recs = history.load()
+            finally:
+                if env is None:
+                    os.environ.pop("XDG_DATA_HOME", None)
+                else:
+                    os.environ["XDG_DATA_HOME"] = env
+            self.assertEqual(path, os.path.join(d, "tt-desktoptool", "history.jsonl"))
+            self.assertFalse(os.path.exists(old))
+            self.assertEqual(recs[0]["name"], "cu")
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

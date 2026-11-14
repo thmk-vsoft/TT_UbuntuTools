@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 import urllib.parse
 
-from gi.repository import Adw, Gdk, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from .. import APP_ID, APP_NAME, VERSION
 
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 QR_PATH = os.path.join(ASSETS, "donate-qr.png")
 ICONS_DIR = os.path.join(ASSETS, "icons")
+APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # chứa LICENSE.txt khi cài
 QR_RATIO = 1006 / 886  # cao / rộng của donate-qr.png
 COPYRIGHT_YEAR = 2026  # khớp với LICENSE
 
@@ -41,7 +42,21 @@ T = {
     "contact": "Liên hệ: ",
     "copy_mail": "Sao chép địa chỉ email",
     "rights": "© {year} {owner}. Bảo lưu mọi quyền.",
+    "license_label": "Giấy phép: ",
+    "license_name": "Độc quyền — Bảo lưu mọi quyền",
+    "license_open": "Mở tệp giấy phép",
+    "disclaimer": "Miễn trừ trách nhiệm",
+    "disclaimer_text": "Phần mềm được cung cấp \"nguyên trạng\", không kèm bất kỳ bảo đảm nào, rõ ràng hay ngụ ý, kể cả bảo đảm về khả năng thương mại, sự phù hợp cho một mục đích cụ thể và không vi phạm quyền. Trong mọi trường hợp, tác giả và những người đóng góp không chịu trách nhiệm về bất kỳ khiếu nại, thiệt hại hay mất mát dữ liệu nào phát sinh từ việc sử dụng hoặc không thể sử dụng phần mềm. Người dùng tự chịu trách nhiệm sao lưu dữ liệu và kiểm tra kết quả trước khi sử dụng.",
 }
+
+
+def doc_path(*names: str) -> str:
+    """Tệp tài liệu đi cùng chương trình (LICENSE.txt, MIEN-TRU-TRACH-NHIEM.txt…); '' nếu không có."""
+    for n in names:
+        p = os.path.join(APP_DIR, n)
+        if os.path.isfile(p):
+            return p
+    return ""
 
 DONATE_CSS = """
 .dk-heart { color: #DB2777; }
@@ -199,12 +214,14 @@ class AboutDialog(Adw.Dialog):
         ver.add_css_class("dim-label")
         box.append(ver)
         desc = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, label=(
-            "Thống kê phần mềm đã cài trên Ubuntu theo phương thức cài (APT, file .deb, PPA, Snap, "
-            "Flatpak, AppImage, pip, npm, cài thủ công) và gỡ phần mềm không cần thiết."))
+            "Thống kê và gỡ phần mềm đã cài trên Ubuntu, dọn dữ liệu thừa theo mức an toàn và xem thư mục "
+            "nào chiếm nhiều dung lượng."))
         box.append(desc)
+        box.append(self._license_line())
 
         box.append(self._license_block())
         box.append(self._coffee_block())
+        box.append(self._disclaimer_block())
 
         rights = Gtk.Label(label=T["rights"].format(year=COPYRIGHT_YEAR, owner=INFO["owner"]), xalign=0)
         rights.add_css_class("dim-label")
@@ -237,6 +254,31 @@ class AboutDialog(Adw.Dialog):
         row2.append(mail)
         row2.append(_copy_button(INFO["email"], T["copy_mail"]))
         b.append(row2)
+        return b
+
+    @staticmethod
+    def _license_line() -> Gtk.Widget:
+        """Dòng "Giấy phép: …" — bấm để mở LICENSE.txt."""
+        path = doc_path("LICENSE.txt", "LICENSE")
+        name = GLib.markup_escape_text(T["license_name"])
+        if path:
+            uri = GLib.markup_escape_text(Gio.File.new_for_path(path).get_uri())
+            markup = f'{GLib.markup_escape_text(T["license_label"])}<a href="{uri}" title="{T["license_open"]}">{name}</a>'
+        else:
+            markup = f'{GLib.markup_escape_text(T["license_label"])}{name}'
+        return Gtk.Label(label=markup, use_markup=True, justify=Gtk.Justification.CENTER, wrap=True)
+
+    @staticmethod
+    def _disclaimer_block() -> Gtk.Widget:
+        b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        b.add_css_class("dk-box")
+        title = Gtk.Label(label=T["disclaimer"], xalign=0)
+        title.add_css_class("heading")
+        b.append(title)
+        text = Gtk.Label(label=T["disclaimer_text"], xalign=0, wrap=True)
+        text.add_css_class("dim-label")
+        text.add_css_class("caption")
+        b.append(text)
         return b
 
     def _coffee_block(self) -> Gtk.Widget:

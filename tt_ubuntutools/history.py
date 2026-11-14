@@ -1,4 +1,4 @@
-"""Lịch sử các lần gỡ: JSON Lines trong ~/.local/share/tt-ubuntutools/history.jsonl."""
+"""Lịch sử các lần gỡ: JSON Lines trong ~/.local/share/tt-desktoptool/history.jsonl."""
 
 from __future__ import annotations
 
@@ -14,7 +14,16 @@ LOG_TAIL_LINES = 80
 
 def history_path() -> str:
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    return os.path.join(base, "tt-ubuntutools", "history.jsonl")
+    path = os.path.join(base, "tt-desktoptool", "history.jsonl")
+    old = os.path.join(base, "tt-ubuntutools", "history.jsonl")  # tên cũ trước 1.4.0
+    if not os.path.lexists(path) and os.path.isfile(old) and not os.path.islink(old):
+        try:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            os.replace(old, path)
+            os.chmod(path, 0o600)
+        except OSError:
+            return old
+    return path
 
 
 def _clean(v):
@@ -131,8 +140,13 @@ def make_record(plan: RemovalPlan, result: RemovalResult, when: dt.datetime | No
 
 def append(record: dict, path: str | None = None) -> None:
     path = path or history_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)  # chỉ chủ tài khoản đọc
+    try:
+        os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    with os.fdopen(fd, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 

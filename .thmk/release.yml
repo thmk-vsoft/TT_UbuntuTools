@@ -1,0 +1,20 @@
+# Lựa chọn của lần phát hành gần nhất (skill /thmk-software-release)
+platform: ubuntu
+version: 1.4.0
+date: 2026-11-14
+license: Độc quyền (Bảo lưu mọi quyền) — LICENSE
+signing: Chưa ký
+user_guide: false
+donate: true
+thmk_vsoft: true
+developer: Không gắn
+welcome_screen: true
+tt_badge: true
+tt_badge_source_icon: data/vn.tt.DesktopTool.svg   # biểu tượng gốc KHÔNG dấu — không gắn dấu hai lần
+tt_badge_output: assets/icon-tt/
+slug: tt-desktoptool
+renamed_from:
+  name: TT_UbuntuTools
+  package: tt-ubuntutools
+  slug: tt-ubuntutools
+  reason: tên cũ chứa nhãn hiệu "Ubuntu" của Canonical (rà soát bản quyền 1.4.0)

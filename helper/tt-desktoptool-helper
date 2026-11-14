@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -IB
-"""Helper đặc quyền của TT_UbuntuTools — chỉ được gọi qua pkexec.
+"""Helper đặc quyền của TT_DesktopTool — chỉ được gọi qua pkexec.
 
 Hành động (nhiều hành động trong một lần xác thực được ngăn cách bằng '::'):
 
@@ -18,7 +18,7 @@ Nguyên tắc an toàn:
   * apt: chỉ gỡ khi tập gói mô phỏng ngay lúc này KHỚP ĐÚNG tập người dùng đã xem trước (--expect),
     không có gói nào bị cài thêm, và không gói nào vi phạm luật bảo vệ.
   * Output của apt/dpkg được helper chuyển tiếp; nếu giao diện bị đóng giữa chừng, helper vẫn đọc
-    hết output (ghi vào /var/log/tt-ubuntutools/) để dpkg không bao giờ bị ngắt giữa chừng.
+    hết output (ghi vào /var/log/tt-desktoptool/) để dpkg không bao giờ bị ngắt giữa chừng.
 
 Mã thoát: 0 ok · 2 tham số sai · 3 không phải root · 5 kiểm tra an toàn thất bại (chưa làm gì)
           · 6 lỗi trong lúc thực hiện (có thể đã làm được một phần — xem các dòng TT-JOB-DONE).
@@ -58,7 +58,7 @@ ENV = {
     "DEBIAN_FRONTEND": "noninteractive",
     "HOME": "/root",
 }
-LOG_DIR = "/var/log/tt-ubuntutools"
+LOG_DIR = "/var/log/tt-desktoptool"
 APT_GET, DPKG_QUERY, SNAP = "/usr/bin/apt-get", "/usr/bin/dpkg-query", "/usr/bin/snap"
 JOURNALCTL = "/usr/bin/journalctl"
 JOURNAL_SIZE = re.compile(r"([1-9][0-9]{0,4})([MG])")
@@ -96,9 +96,21 @@ class Out:
     def _open_log(self):
         if self.log is None:
             try:
-                os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
-                path = os.path.join(LOG_DIR, time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}.log")
-                self.log = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+                try:
+                    os.mkdir(LOG_DIR, 0o700)
+                except FileExistsError:
+                    pass
+                # /var/log cho nhóm syslog ghi: không tin thư mục có sẵn (có thể là liên kết tượng trưng / của người khác)
+                dfd = os.open(LOG_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    st = os.fstat(dfd)
+                    if st.st_uid != 0 or st.st_mode & 0o077:
+                        raise OSError("thư mục log không an toàn")
+                    name = time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}.log"
+                    self.log = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | os.O_NOFOLLOW,
+                                       0o600, dir_fd=dfd)
+                finally:
+                    os.close(dfd)
             except OSError:
                 self.log = -1
 
@@ -603,7 +615,7 @@ def run_job(job):
             return False, "pip: gói vẫn còn"
         return code == 0, f"pip mã {code}"
     if a == "npm-remove":
-        env = dict(ENV, PATH=os.path.dirname(job["node"]) + ":" + ENV["PATH"])
+        env = dict(ENV, PATH=os.path.dirname(job["node"]) + ":" + ENV["PATH"], NPM_CONFIG_UPDATE_NOTIFIER="false")
         code = relay([job["node"], job["npm"], "--prefix", job["prefix"], "uninstall", "-g", job["name"]], env=env)
         if code == 0 and os.path.isdir(os.path.join(job["prefix"], "lib", "node_modules", job["name"])):
             OUT.line("LỖI: npm báo xong nhưng gói vẫn còn.")

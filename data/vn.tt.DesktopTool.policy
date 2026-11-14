@@ -3,18 +3,18 @@
  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
-  <vendor>TT_UbuntuTools</vendor>
-  <action id="vn.tt.UbuntuTools.remove">
+  <vendor>TT_DesktopTool</vendor>
+  <action id="vn.tt.DesktopTool.remove">
     <description>Remove installed software or clean up system data</description>
     <description xml:lang="vi">Gỡ phần mềm đã cài đặt hoặc dọn dẹp dữ liệu hệ thống</description>
-    <message>Authentication is required for TT_UbuntuTools to run: $(command_line)</message>
-    <message xml:lang="vi">Cần xác thực để TT_UbuntuTools thực hiện: $(command_line)</message>
-    <icon_name>vn.tt.UbuntuTools</icon_name>
+    <message>Authentication is required for TT_DesktopTool to run: $(command_line)</message>
+    <message xml:lang="vi">Cần xác thực để TT_DesktopTool thực hiện: $(command_line)</message>
+    <icon_name>vn.tt.DesktopTool</icon_name>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/tt-ubuntutools/tt-ubuntutools-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/tt-desktoptool/tt-desktoptool-helper</annotate>
   </action>
 </policyconfig>

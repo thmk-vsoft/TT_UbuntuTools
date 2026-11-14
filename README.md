@@ -1,6 +1,8 @@
-# TT_UbuntuTools
+# TT_DesktopTool
 
-Công cụ đồ hoạ (GTK4 / libadwaita) để **thống kê phần mềm đã cài trên Ubuntu** theo phương thức cài và **gỡ phần mềm không cần thiết** một cách an toàn.
+Công cụ đồ hoạ (GTK4 / libadwaita) dành cho Ubuntu, gồm ba khu vực: **Gỡ cài đặt** (thống kê phần mềm đã cài theo phương thức cài và gỡ phần mềm không cần thiết một cách an toàn), **Dọn dẹp** (dữ liệu thừa, phân loại theo mức an toàn) và **Dung lượng** (thư mục / file nào chiếm nhiều chỗ).
+
+> Trước bản 1.4.0, phần mềm có tên **TT_UbuntuTools** (gói `tt-ubuntutools`). Gói mới `tt-desktoptool` thay thế gói cũ; lịch sử cũ được chuyển sang tự động.
 
 - Bản quyền phần mềm: **THMK V-Soft** · Liên hệ: **ttvn92i2026@gmail.com**
 - **Buy me a coffee ☕**: ủng hộ dự án nếu bạn thấy phần mềm hữu ích — nút **Đóng góp dự án** trong phần mềm.
@@ -9,7 +11,7 @@ Công cụ đồ hoạ (GTK4 / libadwaita) để **thống kê phần mềm đã
 - Nguồn: APT (kho Ubuntu) · PPA / kho bên thứ ba · file `.deb` cài tay · Snap · Flatpak · AppImage · pip/pipx · npm toàn cục · cài thủ công (`/opt`, `/usr/local/bin`) · **phần mềm tự cài trong thư mục nhà** (`~/Programs`, `~/Applications`, `~/opt`, `~/.local/share`… kèm lối tắt và lệnh trong `~/.local/bin`). Nguồn nào máy không có thì tự bỏ qua.
 - Cột: tên + biểu tượng + mô tả, phương thức, phiên bản, dung lượng, ngày cài, nguồn kho. Sắp xếp theo cột, tìm kiếm, lọc theo nguồn.
 - Chế độ **Ứng dụng** (mặc định: có lối tắt menu hoặc do bạn tự cài) / **Tất cả gói**.
-- Gỡ **từng** phần mềm: xem trước toàn bộ gói bị gỡ theo, tuỳ chọn purge / autoremove, báo kết quả và kiểm tra lại, lưu **lịch sử** (`~/.local/share/tt-ubuntutools/history.jsonl`).
+- Gỡ **từng** phần mềm: xem trước toàn bộ gói bị gỡ theo, tuỳ chọn purge / autoremove, báo kết quả và kiểm tra lại, lưu **lịch sử** (`~/.local/share/tt-desktoptool/history.jsonl`, chỉ chủ tài khoản đọc được).
 
 - **Dọn dẹp** (Ctrl+K): tìm dữ liệu tạo lại được hoặc không còn dùng và cho bạn chọn xoá, mỗi mục có **nhãn màu theo mức an toàn** và ghi chú điều gì xảy ra sau khi xoá:
   - 🟢 **An toàn** (chọn sẵn): bộ nhớ đệm pip / uv / npm / yarn / pnpm, `__pycache__`, gói `.deb` apt đã tải, bản snap cũ đang tắt, nhật ký journal cũ (giữ 100 MB), bản tiện ích VS Code mà VS Code đã đánh dấu lỗi thời.
@@ -31,7 +33,7 @@ Công cụ đồ hoạ (GTK4 / libadwaita) để **thống kê phần mềm đã
 - Thao tác cần quyền quản trị chạy qua `pkexec` + helper chỉ nhận một số hành động cố định. Helper **kiểm tra lại** mọi thứ bằng quyền root ngay trước khi gỡ: apt chỉ chạy khi danh sách gói bị gỡ **khớp đúng** danh sách bạn đã xem trước và không cài thêm gói nào; không bao giờ xoá xuyên qua ổ đĩa/ổ mạng được gắn vào.
 - Mỗi lần gỡ đều hỏi mật khẩu (không nhớ quyền giữa các lần); hộp thoại mật khẩu ghi rõ lệnh sẽ chạy. Cần một polkit agent (có sẵn trong GNOME, KDE, Xfce…). Riêng flatpak cài cho toàn hệ thống do flatpak tự hỏi quyền theo quy tắc riêng.
 - Helper giữ khoá của dpkg từ lúc kiểm tra tới lúc gỡ xong, nên chương trình cập nhật tự động không chen vào làm sai kết quả xem trước.
-- Trong lúc đang gỡ, ứng dụng không cho thoát và xin hệ thống hoãn đăng xuất / ngủ; nếu cửa sổ vẫn bị đóng bất thường, helper tiếp tục chạy apt/dpkg tới cùng và ghi nhật ký vào `/var/log/tt-ubuntutools/`.
+- Trong lúc đang gỡ, ứng dụng không cho thoát và xin hệ thống hoãn đăng xuất / ngủ; nếu cửa sổ vẫn bị đóng bất thường, helper tiếp tục chạy apt/dpkg tới cùng và ghi nhật ký vào `/var/log/tt-desktoptool/`.
 - File trong thư mục người dùng (AppImage…) được chuyển vào **Thùng rác**; mục trong `/opt` bị xoá vĩnh viễn (có cảnh báo trước).
 - Phần mềm tự cài trong thư mục nhà: chỉ nhận ra những gì khớp **đúng mẫu** của một bản cài (file chạy ở `<thư mục>/`, `<thư mục>/bin/` hoặc `.venv/bin/`, là chương trình đã biên dịch / AppImage, không có `.git` hay mã nguồn, script khởi chạy dạng đơn giản…). Lối tắt trỏ vào dự án, dữ liệu hay runtime dùng chung của bạn chỉ được **liệt kê kèm lý do**, không bao giờ bị gỡ. Mặc định chỉ gỡ lối tắt, lệnh khởi chạy và biểu tượng; **thư mục chương trình chỉ vào Thùng rác khi bạn tự bật tuỳ chọn** sau khi xem danh sách nội dung của nó.
 
@@ -41,14 +43,18 @@ Công cụ đồ hoạ (GTK4 / libadwaita) để **thống kê phần mềm đã
 Ubuntu **24.04 LTS trở lên** (libadwaita ≥ 1.5, GTK ≥ 4.12), Python 3.10+. Đã thử trên Ubuntu 26.04 GNOME.
 
 ## Cài đặt
-Tải file `tt-ubuntutools_<phiên bản>_all.deb` ở trang **Releases**, kiểm tra mã SHA-256 rồi cài:
+Tải file `tt-desktoptool-<phiên bản>-linux-x64.deb` và `SHA256SUMS` ở trang phát hành, kiểm tra mã SHA-256 rồi cài trong Terminal:
 ```bash
-sha256sum -c tt-ubuntutools_1.3.1_all.deb.sha256
+sha256sum -c SHA256SUMS --ignore-missing
 ```
 ```bash
-sudo apt install ./tt-ubuntutools_1.3.1_all.deb
+sudo apt install ./tt-desktoptool-1.4.0-linux-x64.deb
 ```
-Sau khi cài, mở **TT_UbuntuTools** từ menu ứng dụng hoặc chạy `tt-ubuntutools`. Không chạy bằng `sudo`.
+Máy đã có bản cũ (kể cả `tt-ubuntutools`) thì cũng nâng cấp bằng lệnh trên — App Center chỉ báo "Installed" chứ không nâng cấp. Sau khi nâng cấp từ `tt-ubuntutools`, có thể xoá hẳn mục cũ còn sót trong danh sách gói:
+```bash
+sudo apt purge tt-ubuntutools
+```
+Sau khi cài, mở **TT_DesktopTool** từ menu ứng dụng hoặc chạy `tt-desktoptool`. Không chạy bằng `sudo`. Lần đầu mở có màn hình chào giới thiệu ba khu vực.
 
 ## Tự đóng gói từ mã nguồn
 ```bash
@@ -75,8 +81,16 @@ python3 -m unittest discover -s tests -t .
 - `tt_ubuntutools/cleanup/` — quét và lập kế hoạch dọn dẹp
 - `tt_ubuntutools/diskusage/` — đo dung lượng, nhãn gợi ý, luật chuyển vào Thùng rác của tab Dung lượng
 - `tt_ubuntutools/ui/` — giao diện (kèm phần Đóng góp dự án theo DonateKit)
-- `helper/tt-ubuntutools-helper` — helper chạy bằng quyền root qua pkexec
-- `data/` — file `.desktop`, biểu tượng, polkit policy
+- `tt_ubuntutools/` — mã nguồn (tên module giữ từ tên cũ)
+- `helper/tt-desktoptool-helper` — helper chạy bằng quyền root qua pkexec
+- `data/` — file `.desktop`, biểu tượng gốc (SVG), polkit policy
+- `assets/icon-tt/` — biểu tượng có dấu TT ở các cỡ (tạo từ `data/vn.tt.DesktopTool.svg`)
 
-## Bản quyền
-© 2026 THMK V-Soft. Bảo lưu mọi quyền. Xem [LICENSE](LICENSE).
+## Giấy phép và miễn trừ trách nhiệm
+- Giấy phép: **Độc quyền** — © 2026 THMK V-Soft. Bảo lưu mọi quyền. Xem [LICENSE](LICENSE).
+- Phần mềm được cung cấp "nguyên trạng" — xem [MIEN-TRU-TRACH-NHIEM.txt](MIEN-TRU-TRACH-NHIEM.txt).
+- Nhật ký thay đổi: [CHANGELOG.md](CHANGELOG.md).
+
+## Nguồn tài nguyên
+- Biểu tượng phần mềm: tự vẽ (THMK V-Soft); dấu TT và mã VietQR thuộc bộ kit THMK V-Soft.
+- Biểu tượng trái tim của nút Đóng góp dự án: theo mẫu DonateKit (hình "heart" của bộ Lucide, giấy phép ISC).

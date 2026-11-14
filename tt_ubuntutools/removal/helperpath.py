@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 
-INSTALLED_HELPER = "/usr/lib/tt-ubuntutools/tt-ubuntutools-helper"
+INSTALLED_HELPER = "/usr/lib/tt-desktoptool/tt-desktoptool-helper"
 SOURCE_HELPER = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "helper", "tt-ubuntutools-helper")
+    os.path.join(os.path.dirname(__file__), "..", "..", "helper", "tt-desktoptool-helper")
 )
 HELPER_MARKER = "TT-HELPER-START"
 
@@ -47,7 +47,7 @@ def helper_path() -> str:
         raise HelperUnavailable(f"{INSTALLED_HELPER} không thuộc root hoặc bị người khác ghi được — từ chối dùng.")
     if os.environ.get("TT_DEV_HELPER") == "1" and os.path.exists(SOURCE_HELPER):
         return SOURCE_HELPER
-    raise HelperUnavailable("Chưa cài gói tt-ubuntutools nên không có helper quyền quản trị. Hãy cài file .deb "
+    raise HelperUnavailable("Chưa cài gói tt-desktoptool nên không có helper quyền quản trị. Hãy cài file .deb "
                             "(hoặc khi phát triển: chạy với TT_DEV_HELPER=1).")
 
 

@@ -519,7 +519,8 @@ def _plan_npm(plan: RemovalPlan, item: SoftwareItem, opts: RemovalOptions):
             return
         plan.steps.append(Step("cmd", [node, npm_real, "--prefix", prefix, "uninstall", "-g", item.name],
                                label="Gỡ bằng npm",
-                               env={"PATH": os.path.dirname(node) + ":/usr/local/bin:/usr/bin:/bin"}))
+                               env={"PATH": os.path.dirname(node) + ":/usr/local/bin:/usr/bin:/bin",
+                                    "NPM_CONFIG_UPDATE_NOTIFIER": "false"}))
 
 
 _PLANNERS = {

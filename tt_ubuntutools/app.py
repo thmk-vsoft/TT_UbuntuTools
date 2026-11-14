@@ -1,4 +1,4 @@
-"""Adw.Application của TT_UbuntuTools."""
+"""Adw.Application của TT_DesktopTool."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ MIN_ADW = (1, 5)
 def _check_environment() -> str:
     """Trả về thông báo lỗi dễ hiểu nếu không chạy được, '' nếu ổn."""
     if os.geteuid() == 0:
-        return ("Không chạy TT_UbuntuTools bằng quyền root/sudo. Hãy mở bằng tài khoản thường — "
+        return ("Không chạy TT_DesktopTool bằng quyền root/sudo. Hãy mở bằng tài khoản thường — "
                 "công cụ sẽ tự hỏi mật khẩu quản trị khi cần gỡ phần mềm.")
     try:
         import gi
@@ -126,8 +126,8 @@ def _show_startup_error(msg: str) -> None:
     import shutil
     import subprocess
 
-    for cmd in (["zenity", "--error", "--no-markup", "--title=TT_UbuntuTools", f"--text={msg}"],
-                ["notify-send", "TT_UbuntuTools", msg]):
+    for cmd in (["zenity", "--error", "--no-markup", "--title=TT_DesktopTool", f"--text={msg}"],
+                ["notify-send", "TT_DesktopTool", msg]):
         if shutil.which(cmd[0]):
             try:
                 if subprocess.run(cmd, timeout=600, check=False).returncode == 0:
@@ -138,7 +138,7 @@ def _show_startup_error(msg: str) -> None:
 
 def main(argv=None) -> int:
     if _ERR:
-        print("TT_UbuntuTools: " + _ERR, file=sys.stderr)
+        print("TT_DesktopTool: " + _ERR, file=sys.stderr)
         if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
             _show_startup_error(_ERR)
         return 1

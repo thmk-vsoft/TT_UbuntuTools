@@ -14,7 +14,7 @@ import re
 import shutil
 import subprocess
 
-from .. import PACKAGE_NAME
+from .. import OLD_PACKAGE_NAMES, PACKAGE_NAME
 
 def _default_python_minor() -> str:
     """'3.14' từ /usr/bin/python3 -> python3.14 (để chỉ bảo vệ đúng Python mặc định của hệ thống)."""
@@ -330,8 +330,8 @@ def apt_reason(name: str, essential: bool = False, priority: str = "",
                dynamic: dict[str, str] | None = None) -> str:
     """Lý do không được gỡ một gói apt ('' nếu được phép)."""
     base = name.split(":")[0]
-    if base == PACKAGE_NAME:
-        return "Đây là chính công cụ TT_UbuntuTools."
+    if base == PACKAGE_NAME or base in OLD_PACKAGE_NAMES:
+        return "Đây là chính công cụ TT_DesktopTool."
     if essential:
         return f"Gói {base} được đánh dấu Essential — bắt buộc cho hệ thống."
     if priority in ("required", "important"):

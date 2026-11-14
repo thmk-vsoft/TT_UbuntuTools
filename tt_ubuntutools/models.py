@@ -124,7 +124,7 @@ class Step:
             return "Chuyển vào Thùng rác: " + ", ".join(self.argv)
         if self.kind == "delete":
             return "Xoá vĩnh viễn: " + ", ".join(self.argv[:6]) + (f" … (+{len(self.argv) - 6})" if len(self.argv) > 6 else "")
-        prefix = "pkexec tt-ubuntutools-helper " if self.root else ""
+        prefix = "pkexec tt-desktoptool-helper " if self.root else ""
         return prefix + " ".join(self.argv)
 
 

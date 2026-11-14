@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=TT_DesktopTool
+GenericName=Software and Disk Cleanup
+GenericName[vi]=Gỡ phần mềm và dọn dẹp
+Comment=Uninstall software, clean up leftover data and see what fills your disk
+Comment[vi]=Gỡ phần mềm đã cài, dọn dữ liệu thừa và xem thư mục nào chiếm nhiều dung lượng
+Exec=tt-desktoptool
+Icon=vn.tt.DesktopTool
+Terminal=false
+Categories=System;PackageManager;GTK;
+Keywords=apt;snap;flatpak;appimage;deb;uninstall;remove;package;cleanup;disk;gỡ;phần mềm;dọn dẹp;dung lượng;TT_UbuntuTools;
+StartupNotify=true

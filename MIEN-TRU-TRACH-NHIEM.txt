@@ -1,0 +1,13 @@
+MIỄN TRỪ TRÁCH NHIỆM
+
+Phần mềm được cung cấp "nguyên trạng", không kèm bất kỳ bảo đảm nào, rõ ràng hay ngụ ý, kể cả bảo đảm về khả năng
+thương mại, sự phù hợp cho một mục đích cụ thể và không vi phạm quyền. Trong mọi trường hợp, tác giả và những người
+đóng góp không chịu trách nhiệm về bất kỳ khiếu nại, thiệt hại hay mất mát dữ liệu nào phát sinh từ việc sử dụng hoặc
+không thể sử dụng phần mềm. Người dùng tự chịu trách nhiệm sao lưu dữ liệu và kiểm tra kết quả trước khi sử dụng.
+
+DISCLAIMER
+
+This software is provided "as is", without warranty of any kind, express or implied, including the warranties of
+merchantability, fitness for a particular purpose and non-infringement. In no event shall the authors or contributors
+be liable for any claim, damages or data loss arising from the use of, or inability to use, the software. Users are
+responsible for backing up their data and checking results before relying on them.

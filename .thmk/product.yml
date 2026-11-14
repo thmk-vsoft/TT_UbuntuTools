@@ -1,0 +1,15 @@
+slug: tt-desktoptool
+name: TT_DesktopTool
+tech: python
+homepage: https://github.com/thmk-vsoft/TT_DesktopTool_Ubuntu
+platforms:
+  - linux
+summary:
+  vi: Gỡ phần mềm, dọn dẹp dữ liệu thừa và xem dung lượng thư mục trên Ubuntu
+  en: Uninstall software, clean up leftover data and see what fills your disk on Ubuntu
+description:
+  vi: Liệt kê mọi phần mềm đã cài theo phương thức cài (APT, PPA, file .deb, Snap, Flatpak, AppImage, pip, npm, cài thủ công, phần mềm tự cài trong thư mục nhà) và gỡ từng phần mềm với xem trước, luật bảo vệ hệ thống và lịch sử gỡ. Mục Dọn dẹp tìm bộ nhớ đệm, gói .deb đã tải, bản snap cũ, node_modules, .venv… và phân loại theo mức an toàn bằng màu sắc và ghi chú. Mục Dung lượng duyệt thư mục như trình quản lý file, cho thấy thư mục / file nào chiếm nhiều chỗ (kể cả mục ẩn) và chuyển mục lớn trong thư mục nhà vào Thùng rác một cách an toàn. Trước bản 1.4.0 có tên TT_UbuntuTools.
+  en: Lists all installed software by install method (APT, PPA, .deb files, Snap, Flatpak, AppImage, pip, npm, manual installs, self-installed apps in the home folder) and uninstalls one item at a time with a preview, system protection rules and a removal history. The Cleanup section finds caches, downloaded .deb packages, old snap revisions, node_modules, .venv and more, grouped by safety level with colours and notes. The Disk usage section browses folders like a file manager, shows which folders and files (hidden ones included) take the most space, and safely moves large items in the home folder to the Trash. Called TT_UbuntuTools before version 1.4.0.
+requirements:
+  vi: Ubuntu 24.04 trở lên (GNOME), Python 3.10+, GTK 4.12+, libadwaita 1.5+
+  en: Ubuntu 24.04 or later (GNOME), Python 3.10+, GTK 4.12+, libadwaita 1.5+
