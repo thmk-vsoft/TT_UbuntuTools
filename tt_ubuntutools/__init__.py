@@ -3,4 +3,4 @@
 APP_ID = "vn.tt.UbuntuTools"
 APP_NAME = "TT_UbuntuTools"
 PACKAGE_NAME = "tt-ubuntutools"
-VERSION = "1.3.0"
+VERSION = "1.3.1"

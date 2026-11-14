@@ -43,10 +43,10 @@ Ubuntu **24.04 LTS trở lên** (libadwaita ≥ 1.5, GTK ≥ 4.12), Python 3.10+
 ## Cài đặt
 Tải file `tt-ubuntutools_<phiên bản>_all.deb` ở trang **Releases**, kiểm tra mã SHA-256 rồi cài:
 ```bash
-sha256sum -c tt-ubuntutools_1.3.0_all.deb.sha256
+sha256sum -c tt-ubuntutools_1.3.1_all.deb.sha256
 ```
 ```bash
-sudo apt install ./tt-ubuntutools_1.3.0_all.deb
+sudo apt install ./tt-ubuntutools_1.3.1_all.deb
 ```
 Sau khi cài, mở **TT_UbuntuTools** từ menu ứng dụng hoặc chạy `tt-ubuntutools`. Không chạy bằng `sudo`.
 

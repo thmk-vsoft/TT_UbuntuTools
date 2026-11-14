@@ -40,6 +40,14 @@ install -m 0644 "$ROOT/LICENSE" "$DOC/copyright"
 cat > "$STAGE/changelog.tmp" <<EOF
 $PKG ($VERSION) unstable; urgency=medium
 
+  * Sửa mô tả gói bị lỗi font (dấu "?") trong App Center: PackageKit đọc mô tả
+    ở locale C nên mô tả gói nay viết bằng tiếng Anh (giao diện vẫn tiếng Việt).
+  * Cập nhật trang chủ sang kho thmk-vsoft/TT_UbuntuTools_Ubuntu.
+
+ -- THMK V-Soft <ttvn92i2026@gmail.com>  $(LC_ALL=C date -R)
+
+$PKG (1.3.0) unstable; urgency=medium
+
   * Tab mới "Dung lượng" (Ctrl+3): duyệt thư mục như trình quản lý file, xem
     dung lượng và tỉ lệ % của từng thư mục / file (kể cả mục ẩn), tính dần khi
     mở từng thư mục. Nhãn gợi ý theo 4 mức an toàn, nút "Mở ở tab Dọn dẹp".
@@ -140,14 +148,28 @@ Installed-Size: $INSTALLED_SIZE
 Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0 (>= 4.12), gir1.2-adw-1 (>= 1.5), python3-apt, pkexec | policykit-1
 Suggests: snapd, flatpak, python3-pip
 Maintainer: THMK V-Soft <ttvn92i2026@gmail.com>
-Homepage: https://github.com/thmk-vsoft/TT_UbuntuTools
-Description: thống kê và gỡ phần mềm đã cài trên Ubuntu
- TT_UbuntuTools liệt kê phần mềm đã cài theo phương thức cài đặt (APT kho
- Ubuntu, PPA / kho bên thứ ba, file .deb, Snap, Flatpak, AppImage, pip, npm,
- cài thủ công trong /opt), hiển thị phiên bản, dung lượng, ngày cài, nguồn kho;
- cho phép gỡ từng phần mềm với xem trước, tuỳ chọn purge/autoremove, chặn gỡ
- thành phần quan trọng của hệ thống và lưu lịch sử các lần gỡ.
+Homepage: https://github.com/thmk-vsoft/TT_UbuntuTools_Ubuntu
+Description: List, uninstall software and clean up disk space on Ubuntu
+ TT_UbuntuTools lists installed software by install method (APT, PPA and
+ third-party repositories, local .deb files, Snap, Flatpak, AppImage, pip,
+ npm, manual installs in /opt and self-installed apps in the home folder) and
+ uninstalls one item at a time with a preview, system protection rules and a
+ removal history.
+ .
+ The Cleanup section finds caches, downloaded .deb packages, old snap
+ revisions, node_modules, .venv and more, grouped by safety level. The Disk
+ usage section browses folders like a file manager, shows which folders and
+ files take the most space and safely moves large items to the Trash.
+ .
+ The user interface is in Vietnamese.
 EOF
+
+# PackageKit / App Center chạy ở locale C và đổi mọi ký tự ngoài ASCII trong mô tả gói thành "?"
+# -> trường control phải là ASCII (giao diện trong app vẫn tiếng Việt).
+if LC_ALL=C grep -n '[^ -~]' "$STAGE/DEBIAN/control"; then
+  echo "LỖI: DEBIAN/control có ký tự ngoài ASCII (App Center sẽ hiện thành '?')" >&2
+  exit 1
+fi
 
 mkdir -p "$OUT"
 DEB="$OUT/${PKG}_${VERSION}_all.deb"
